@@ -104,10 +104,13 @@ private:
 	Shader shader;
 	ObjComponent obj;
 	BoundHighlighting bhl;
+	glm::vec3 cameraPos = glm::vec3(-6.0f, 2.0f, 0.0f);
+	glm::vec3 cameraTarget = glm::vec3(0.0f, 1.0f, 0.0f);
+	glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 	glm::mat4 view = glm::lookAt(
-		glm::vec3(-6.0f, 2.0f, 0.0f),  // 相机在“上方”
-		glm::vec3(0.0f, 1.0f, 0.0f),  // 看向原点
-		glm::vec3(0.0f, 1.0f, 0.0f)  // “上方向”
+		cameraPos,  // 相机在“上方”
+		cameraTarget,  // 看向原点
+		cameraUp  // “上方向”
 	);
 	glm::mat4 projection = glm::perspective(
 		glm::radians(45.0f),
@@ -122,36 +125,70 @@ private:
 	void InitGrid(float halfSize = 10.0f, int lines = 200)
 	{
 		std::vector<glm::vec3> vertices;
+		std::vector<unsigned int> indices;
 
 		float step = (halfSize * 2.0f) / lines;
 
-		// X方向平行线（沿Z方向画线）
-		for (int i = 0; i <= lines; i++)
+		// 1. 生成“交叉点顶点”
+		for (int z = 0; z <= lines; z++)
 		{
-			float z = -halfSize + i * step;
-			vertices.push_back(glm::vec3(-halfSize, 0.0f, z));
-			vertices.push_back(glm::vec3(halfSize, 0.0f, z));
+			for (int x = 0; x <= lines; x++)
+			{
+				float px = -halfSize + x * step;
+				float pz = -halfSize + z * step;
+
+				vertices.push_back(glm::vec3(px, 0.0f, pz));
+			}
 		}
 
-		// Z方向平行线（沿X方向画线）
-		for (int i = 0; i <= lines; i++)
+		// 2. 生成横向线索引
+		for (int z = 0; z <= lines; z++)
 		{
-			float x = -halfSize + i * step;
-			vertices.push_back(glm::vec3(x, 0.0f, -halfSize));
-			vertices.push_back(glm::vec3(x, 0.0f, halfSize));
+			for (int x = 0; x < lines; x++)
+			{
+				int i0 = z * (lines + 1) + x;
+				int i1 = i0 + 1;
+
+				indices.push_back(i0);
+				indices.push_back(i1);
+			}
 		}
 
-		gridLineCount = (int)vertices.size();
+		// 3. 生成纵向线索引
+		for (int z = 0; z < lines; z++)
+		{
+			for (int x = 0; x <= lines; x++)
+			{
+				int i0 = z * (lines + 1) + x;
+				int i1 = i0 + (lines + 1);
+
+				indices.push_back(i0);
+				indices.push_back(i1);
+			}
+		}
+
+		gridLineCount = (int)indices.size();
+
+		GLuint EBO;
 
 		glGenVertexArrays(1, &gridVAO);
 		glGenBuffers(1, &gridVBO);
+		glGenBuffers(1, &EBO);
 
 		glBindVertexArray(gridVAO);
 
+		// vertex buffer
 		glBindBuffer(GL_ARRAY_BUFFER, gridVBO);
 		glBufferData(GL_ARRAY_BUFFER,
 			vertices.size() * sizeof(glm::vec3),
 			vertices.data(),
+			GL_STATIC_DRAW);
+
+		// index buffer
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+			indices.size() * sizeof(unsigned int),
+			indices.data(),
 			GL_STATIC_DRAW);
 
 		glEnableVertexAttribArray(0);
@@ -184,6 +221,14 @@ public:
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		shader.Use();
+		glUniform3f(
+			glGetUniformLocation(shader.ID, "cameraPos"),
+			cameraPos.x, cameraPos.y, cameraPos.z
+		);
+		glUniform1f(
+			glGetUniformLocation(shader.ID, "time"),
+			t
+		);
 
 		// ====== 1. 先画 grid ======
 		glm::mat4 identity = glm::mat4(1.0f);
@@ -197,13 +242,18 @@ public:
 		glUniformMatrix4fv(glGetUniformLocation(shader.ID, "projection"),
 			1, GL_FALSE, glm::value_ptr(projection));
 
+		glUniform1i(glGetUniformLocation(shader.ID, "isGridDraw"), 1);
+		glUniform1i(glGetUniformLocation(shader.ID, "cameraPos"), 1);
+
 		glBindVertexArray(gridVAO);
-		glDrawArrays(GL_LINES, 0, gridLineCount);
+		//glDrawArrays(GL_LINES, 0, gridLineCount);
+		glBindVertexArray(gridVAO);
+		glDrawElements(GL_LINES, gridLineCount, GL_UNSIGNED_INT, 0);
 		glBindVertexArray(0);
 
 		// ====== 2. 再画 obj ======
 		obj.Reset();
-		obj.Rotate(0.0, t, t * 2.6);
+		obj.Rotate(0.0, t * 0.5, t * 2.6);
 		obj.Move(0, 1, 0);
 		t += 0.001;
 
@@ -211,6 +261,7 @@ public:
 
 		glUniformMatrix4fv(glGetUniformLocation(shader.ID, "model"),
 			1, GL_FALSE, glm::value_ptr(model));
+		glUniform1i(glGetUniformLocation(shader.ID, "isGridDraw"), 0);
 
 		obj.Draw(shader.ID);
 	}

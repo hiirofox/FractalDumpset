@@ -2,35 +2,37 @@
 
 in vec3 FragPos;
 in vec3 Normal;
+uniform int isGridDraw;
+uniform vec3 cameraPos;
 
 out vec4 FragColor;
 
-uniform vec3 lightPos = vec3(5.0, 5.0, 5.0);
-uniform vec3 viewPos   = vec3(0.0, 0.0, 5.0);
+vec3 lightPos = {0.0,5.0,0.0};
 
-uniform vec3 objectColor = vec3(1.0, 1.0, 1.0);
-uniform vec3 fogColor    = vec3(0.5, 0.6, 0.7);
-
-uniform float fogStart = 5.0;
-uniform float fogEnd   = 20.0;
-
+float inRangeProp(float x,float l,float h)
+{
+    if (x<l)return 0.0;
+    if (x>h)return 1.0;
+    return (x-l)/(h-l);
+}
 void main()
 {
-    vec3 N = normalize(Normal);
-    vec3 L = normalize(lightPos - FragPos);
-
-    float diff = max(dot(N, L), 0.0);
-
-    float ambient = 0.25;
-
-    vec3 color = objectColor * (ambient + diff);
-
-    float dist = length(viewPos - FragPos);
-
-    float fogFactor = (fogEnd - dist) / (fogEnd - fogStart);
-    fogFactor = clamp(fogFactor, 0.0, 1.0);
-
-    color = mix(fogColor, color, fogFactor);
-
-    FragColor = vec4(color, 1.0);
+    if (isGridDraw == 1)
+    {
+        vec3 color = {0.0,1.5,1.5};
+        float r = length(FragPos-cameraPos);
+        r = inRangeProp(r,0.0,20.0);
+        color = color * pow(1.0-r,2.0);
+        FragColor = vec4(color, 1.0);
+    }
+    else
+    {
+        vec3 lightPass = lightPos-FragPos;
+        vec3 clv = cross(lightPass,Normal);
+        float lv = length(clv);
+        lv = max(lv, 0.0001);
+        vec3 color = {1.0,1.0,1.0};
+        color /= lv;
+        FragColor = vec4(color,1.0);
+    }
 }

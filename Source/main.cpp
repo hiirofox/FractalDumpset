@@ -1,5 +1,7 @@
 ﻿#define GLFW_INCLUDE_VULKAN
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <chrono>
 
 #include "Enola2Component.h"
