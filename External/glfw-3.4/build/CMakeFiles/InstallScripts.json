@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Projects/c++/FractalDumpset/glfw-3.4/build/cmake_install.cmake",
+		"D:/Projects/c++/FractalDumpset/glfw-3.4/build/src/cmake_install.cmake",
+		"D:/Projects/c++/FractalDumpset/glfw-3.4/build/examples/cmake_install.cmake",
+		"D:/Projects/c++/FractalDumpset/glfw-3.4/build/tests/cmake_install.cmake",
+		"D:/Projects/c++/FractalDumpset/glfw-3.4/build/docs/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

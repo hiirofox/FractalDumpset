@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\Projects\c++\FractalDumpset\glfw-3.4\build\CMakeFiles\1dadb2d576cfb75e742dafb928fa31a2\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{B88DECEC-7A85-34A5-9AA0-5CD9231C055D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
