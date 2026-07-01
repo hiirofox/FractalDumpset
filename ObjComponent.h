@@ -8,7 +8,7 @@
 #include <iostream>
 
 #include "External/glad/include/glad/glad.h"
-#include "External/glfw-3.4/include/GLFW/glfw3.h"
+//#include "External/glfw-3.4/include/GLFW/glfw3.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"

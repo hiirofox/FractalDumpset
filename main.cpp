@@ -1,177 +1,350 @@
 ﻿#define GLFW_INCLUDE_VULKAN
+
+#include <chrono>
+
 #include "Enola2Component.h"
 #include "Enola2Event.h"
 
 #include "ObjComponent.h"
 #include "Shader.h"
+#include "App.h"
 
-class View3DWorld :public Enola2::Component
-{
-private:
-	Shader shader;
-	ObjComponent obj;
-	glm::mat4 view = glm::lookAt(
-		glm::vec3(0.0f, 5.0f, 0.0f),  // 相机在“上方”
-		glm::vec3(0.0f, 0.0f, 0.0f),  // 看向原点
-		glm::vec3(0.0f, 0.0f, -1.0f)  // “上方向”
-	);
-	glm::mat4 projection = glm::perspective(
-		glm::radians(45.0f),
-		800.0f / 600.0f,
-		0.1f,
-		100.0f
-	);
-public:
-	View3DWorld()
-	{
-
-	}
-	void Init() override
-	{
-		shader.Init(
-			"D:/Projects/c++/FractalDumpset/Resources/vertex.glsl",
-			"D:/Projects/c++/FractalDumpset/Resources/fragment.glsl"
-		);
-		obj.Init("D:/Projects/c++/FractalDumpset/Resources/fd.obj");
-		obj.Scale(1.0f);
-	}
-	void Render() override
-	{
-		glEnable(GL_DEPTH_TEST);
-		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-		shader.Use();
-
-		obj.Reset();
-		obj.Rotate(0.0, 0.0, 3.1415926 / 2);
-
-		glm::mat4 model = obj.GetModelMatrix(); // ❗需要你加 getter
-
-		glUniformMatrix4fv(glGetUniformLocation(shader.ID, "model"),
-			1, GL_FALSE, glm::value_ptr(model));
-		glUniformMatrix4fv(glGetUniformLocation(shader.ID, "view"),
-			1, GL_FALSE, glm::value_ptr(view));
-		glUniformMatrix4fv(glGetUniformLocation(shader.ID, "projection"),
-			1, GL_FALSE, glm::value_ptr(projection));
-
-		obj.Draw(shader.ID);
-	}
-	void Resize() override
-	{
-		auto bounds = GetBounds();
-		printf("3dWorld Bounds:%d %d %d %d\n", (int)bounds.x, (int)bounds.y, (int)bounds.w, (int)bounds.h);
-	}
-};
-class MyRootComponent :public Enola2::Component, public Enola2::EventListener
-{
-private:
-	View3DWorld v3d;
-public:
-	MyRootComponent()
-	{
-		AddChild(v3d);
-	}
-	void Render() override
-	{
-
-	}
-	void Resize() override
-	{
-		auto bounds = GetBounds();
-		printf("Root Bounds:%d %d %d %d\n", (int)bounds.x, (int)bounds.y, (int)bounds.w, (int)bounds.h);
-		v3d.SetBounds({ 32,32,bounds.w - 64,bounds.h - 64 });
-	}
-};
 MyRootComponent rootComponent;
 
 //////////////////////////////////////
-void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <windowsx.h>
+
+#ifndef WGL_CONTEXT_MAJOR_VERSION_ARB
+#define WGL_CONTEXT_MAJOR_VERSION_ARB 0x2091
+#endif
+#ifndef WGL_CONTEXT_MINOR_VERSION_ARB
+#define WGL_CONTEXT_MINOR_VERSION_ARB 0x2092
+#endif
+#ifndef WGL_CONTEXT_PROFILE_MASK_ARB
+#define WGL_CONTEXT_PROFILE_MASK_ARB 0x9126
+#endif
+#ifndef WGL_CONTEXT_CORE_PROFILE_BIT_ARB
+#define WGL_CONTEXT_CORE_PROFILE_BIT_ARB 0x00000001
+#endif
+
+using PFNWGLCREATECONTEXTATTRIBSARBPROC =
+HGLRC(WINAPI*)(HDC hDC, HGLRC hShareContext, const int* attribList);
+using PFNWGLSWAPINTERVALEXTPROC = BOOL(WINAPI*)(int interval);
+using PFNDWMFLUSHPROC = HRESULT(WINAPI*)();
+
+static HWND g_hwnd = nullptr;
+static HDC g_hdc = nullptr;
+static HGLRC g_glrc = nullptr;
+static bool g_running = true;
+static bool g_vsyncEnabled = false;
+static PFNDWMFLUSHPROC g_dwmFlush = nullptr;
+
+static void* GetGLProcAddress(const char* name)
 {
-	rootComponent.SetBounds({ 0, 0, (float)width, (float)height });
-}
-void KBCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-	using namespace Enola2;
-	KeyEvent e;
-	e.key = key;
-	if (action == GLFW_PRESS)
-		e.state = KeyState::Down;
-	else if (action == GLFW_RELEASE)
-		e.state = KeyState::Up;
-	else
-		return;
-	EventListener::DispatchKey(e);
-	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-		glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-void MouseCallback(GLFWwindow* window, double xpos, double ypos)
-{
-	using namespace Enola2;
-	MouseEvent e;
-	e.x = static_cast<int>(xpos);
-	e.y = static_cast<int>(ypos);
-	e.state = MouseState::Move;
-	EventListener::DispatchMouse(e);
-}
-void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
-{
-	using namespace Enola2;
-	MouseEvent e;
-	e.x = 0;
-	e.y = 0;
-	double x, y;
-	glfwGetCursorPos(window, &x, &y);
-	e.x = (int)x;
-	e.y = (int)y;
-	if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
-		e.state = MouseState::LeftDown;
-	else if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
-		e.state = MouseState::RightDown;
-	else
-		return;
-	EventListener::DispatchMouse(e);
-}
-void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
-{
-	using namespace Enola2;
-	MouseEvent e;
-	e.state = MouseState::Wheel;
-	e.wheel = (int)yoffset;
-	double x, y;
-	glfwGetCursorPos(window, &x, &y);
-	e.x = (int)x;
-	e.y = (int)y;
-	EventListener::DispatchMouse(e);
-}
-int main() {
-	glfwInit();
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	void* p = (void*)wglGetProcAddress(name);
 
-	GLFWwindow* window = glfwCreateWindow(800, 600, ".dumpset00", nullptr, nullptr);
-	glfwMakeContextCurrent(window);
-
-	gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
-
-	glfwSetKeyCallback(window, KBCallback);
-	glfwSetCursorPosCallback(window, MouseCallback);
-	glfwSetMouseButtonCallback(window, MouseButtonCallback);
-	glfwSetScrollCallback(window, ScrollCallback);
-
-	rootComponent.SetBounds({ 0,0,800,600 });
-	rootComponent.DoInit();
-
-	// ---------------- Render loop ----------------
-	while (!glfwWindowShouldClose(window)) {
-		glfwPollEvents();//处理鼠标键盘事件回调
-
-		rootComponent.DoRender();
-
-		glfwSwapBuffers(window);
+	if (p == nullptr ||
+		p == (void*)0x1 ||
+		p == (void*)0x2 ||
+		p == (void*)0x3 ||
+		p == (void*)-1)
+	{
+		static HMODULE opengl32 = LoadLibraryA("opengl32.dll");
+		p = (void*)GetProcAddress(opengl32, name);
 	}
 
-	glfwTerminate();
+	return p;
+}
+
+static void InitDwmFlush()
+{
+	HMODULE dwmapi = LoadLibraryA("dwmapi.dll");
+	if (dwmapi)
+		g_dwmFlush = (PFNDWMFLUSHPROC)GetProcAddress(dwmapi, "DwmFlush");
+}
+
+static void DispatchResize(int width, int height)
+{
+	if (width <= 0 || height <= 0)
+		return;
+
+	rootComponent.SetBounds({ 0, 0, (float)width, (float)height });
+}
+
+static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	using namespace Enola2;
+
+	switch (msg)
+	{
+	case WM_CLOSE:
+		g_running = false;
+		PostQuitMessage(0);
+		return 0;
+
+	case WM_DESTROY:
+		g_running = false;
+		PostQuitMessage(0);
+		return 0;
+
+	case WM_SIZE:
+	{
+		int width = LOWORD(lParam);
+		int height = HIWORD(lParam);
+		DispatchResize(width, height);
+		return 0;
+	}
+
+	case WM_KEYDOWN:
+	case WM_SYSKEYDOWN:
+	{
+		KeyEvent e;
+		e.key = (int)wParam;
+		e.state = KeyState::Down;
+		EventListener::DispatchKey(e);
+
+		if (wParam == VK_ESCAPE)
+		{
+			g_running = false;
+			PostQuitMessage(0);
+		}
+
+		return 0;
+	}
+
+	case WM_KEYUP:
+	case WM_SYSKEYUP:
+	{
+		KeyEvent e;
+		e.key = (int)wParam;
+		e.state = KeyState::Up;
+		EventListener::DispatchKey(e);
+		return 0;
+	}
+
+	case WM_MOUSEMOVE:
+	{
+		MouseEvent e;
+		e.x = GET_X_LPARAM(lParam);
+		e.y = GET_Y_LPARAM(lParam);
+		e.state = MouseState::Move;
+		EventListener::DispatchMouse(e);
+		return 0;
+	}
+
+	case WM_LBUTTONDOWN:
+	{
+		SetCapture(hwnd);
+
+		MouseEvent e;
+		e.x = GET_X_LPARAM(lParam);
+		e.y = GET_Y_LPARAM(lParam);
+		e.state = MouseState::LeftDown;
+		EventListener::DispatchMouse(e);
+		return 0;
+	}
+
+	case WM_RBUTTONDOWN:
+	{
+		SetCapture(hwnd);
+
+		MouseEvent e;
+		e.x = GET_X_LPARAM(lParam);
+		e.y = GET_Y_LPARAM(lParam);
+		e.state = MouseState::RightDown;
+		EventListener::DispatchMouse(e);
+		return 0;
+	}
+
+	case WM_LBUTTONUP:
+	case WM_RBUTTONUP:
+		ReleaseCapture();
+		return 0;
+
+	case WM_MOUSEWHEEL:
+	{
+		POINT p;
+		p.x = GET_X_LPARAM(lParam);
+		p.y = GET_Y_LPARAM(lParam);
+		ScreenToClient(hwnd, &p);
+
+		MouseEvent e;
+		e.x = p.x;
+		e.y = p.y;
+		e.state = MouseState::Wheel;
+		e.wheel = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+		EventListener::DispatchMouse(e);
+		return 0;
+	}
+	}
+
+	return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+static void SetupPixelFormat(HDC hdc)
+{
+	PIXELFORMATDESCRIPTOR pfd{};
+	pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+	pfd.nVersion = 1;
+	pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+	pfd.iPixelType = PFD_TYPE_RGBA;
+	pfd.cColorBits = 32;
+	pfd.cDepthBits = 24;
+	pfd.cStencilBits = 8;
+	pfd.iLayerType = PFD_MAIN_PLANE;
+
+	int pixelFormat = ChoosePixelFormat(hdc, &pfd);
+	SetPixelFormat(hdc, pixelFormat, &pfd);
+}
+
+static bool CreateOpenGLContext(HWND hwnd)
+{
+	g_hdc = GetDC(hwnd);
+	SetupPixelFormat(g_hdc);
+
+	HGLRC tempContext = wglCreateContext(g_hdc);
+	wglMakeCurrent(g_hdc, tempContext);
+
+	auto wglCreateContextAttribsARB =
+		(PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+
+	if (wglCreateContextAttribsARB)
+	{
+		const int attribs[] =
+		{
+			WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+			WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+			WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+			0
+		};
+
+		g_glrc = wglCreateContextAttribsARB(g_hdc, nullptr, attribs);
+
+		wglMakeCurrent(nullptr, nullptr);
+		wglDeleteContext(tempContext);
+
+		if (!g_glrc)
+			return false;
+
+		wglMakeCurrent(g_hdc, g_glrc);
+	}
+	else
+	{
+		g_glrc = tempContext;
+	}
+
+	if (!gladLoadGLLoader((GLADloadproc)GetGLProcAddress))
+		return false;
+
+	auto wglSwapIntervalEXT =
+		(PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+	if (wglSwapIntervalEXT)
+		g_vsyncEnabled = wglSwapIntervalEXT(1) == TRUE;
+
+	return true;
+}
+
+static HWND CreateMainWindow(HINSTANCE instance, int width, int height)
+{
+	const wchar_t* className = L"FractalDumpsetWindow";
+
+	WNDCLASSW wc{};
+	wc.style = CS_OWNDC;
+	wc.lpfnWndProc = WindowProc;
+	wc.hInstance = instance;
+	wc.lpszClassName = className;
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+
+	RegisterClassW(&wc);
+
+	RECT rect{ 0, 0, width, height };
+	AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+
+	return CreateWindowExW(
+		0,
+		className,
+		L".dumpset00",
+		WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+		CW_USEDEFAULT,
+		CW_USEDEFAULT,
+		rect.right - rect.left,
+		rect.bottom - rect.top,
+		nullptr,
+		nullptr,
+		instance,
+		nullptr
+	);
+}
+
+int main()
+{
+	HINSTANCE instance = GetModuleHandleW(nullptr);
+
+	g_hwnd = CreateMainWindow(instance, 800, 600);
+	if (!g_hwnd)
+		return -1;
+
+	if (!CreateOpenGLContext(g_hwnd))
+		return -1;
+	InitDwmFlush();
+
+	RECT client{};
+	GetClientRect(g_hwnd, &client);
+
+	rootComponent.SetBounds({
+		0,
+		0,
+		(float)(client.right - client.left),
+		(float)(client.bottom - client.top)
+		});
+
+	rootComponent.DoInit();
+
+	MSG msg{};
+	using Clock = std::chrono::steady_clock;
+	constexpr auto swapWaitThreshold = std::chrono::microseconds(1000);
+
+	while (g_running)
+	{
+		while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+		{
+			if (msg.message == WM_QUIT)
+				g_running = false;
+
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
+		}
+
+		if (!g_running)
+			break;
+
+		rootComponent.DoRender();
+		const auto beforeSwap = Clock::now();
+		SwapBuffers(g_hdc);
+		const auto afterSwap = Clock::now();
+
+		if (afterSwap - beforeSwap > swapWaitThreshold)
+			continue;
+
+		if (g_dwmFlush && SUCCEEDED(g_dwmFlush()))
+			continue;
+	}
+
+	if (g_glrc)
+	{
+		wglMakeCurrent(nullptr, nullptr);
+		wglDeleteContext(g_glrc);
+		g_glrc = nullptr;
+	}
+
+	if (g_hwnd && g_hdc)
+	{
+		ReleaseDC(g_hwnd, g_hdc);
+		g_hdc = nullptr;
+	}
+
 	return 0;
 }

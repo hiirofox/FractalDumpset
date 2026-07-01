@@ -2,7 +2,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "External/glad/include/glad/glad.h"
-#include "External/glfw-3.4/include/GLFW/glfw3.h"
+//#include "External/glfw-3.4/include/GLFW/glfw3.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
 

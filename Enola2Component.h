@@ -8,29 +8,62 @@
 #include <iostream>
 
 #include "External/glad/include/glad/glad.h"
-#include "External/glfw-3.4/include/GLFW/glfw3.h"
+//#include "External/glfw-3.4/include/GLFW/glfw3.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"
 
 namespace Enola2
 {
-	static void ResetGLState()//用于隔离component会话
-	{
-		glUseProgram(0);
-		glBindVertexArray(0);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-		glActiveTexture(GL_TEXTURE0);
-		glDisable(GL_BLEND);
-		glEnable(GL_DEPTH_TEST);
-		glDepthFunc(GL_LESS);
-		glDisable(GL_CULL_FACE);
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	}
 	struct Rectf
 	{
 		float x, y, w, h;
+	};
+	class RenderContext
+	{
+	private:
+		static void ResetState()
+		{
+			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+			glUseProgram(0);
+			glBindVertexArray(0);
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+			glActiveTexture(GL_TEXTURE0);
+			glDisable(GL_BLEND);
+			glDisable(GL_CULL_FACE);
+			glDisable(GL_STENCIL_TEST);
+			glEnable(GL_DEPTH_TEST);
+			glDepthFunc(GL_LESS);
+			glDepthMask(GL_TRUE);
+			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+			glLineWidth(1.0f);
+			glEnable(GL_SCISSOR_TEST);
+		}
+
+	public:
+		static void StartRender(Rectf globalBounds)
+		{
+			ResetState();
+			glViewport(
+				(GLint)globalBounds.x,
+				(GLint)globalBounds.y,
+				(GLsizei)globalBounds.w,
+				(GLsizei)globalBounds.h
+			);
+			glEnable(GL_SCISSOR_TEST);
+			glScissor(
+				(GLint)globalBounds.x,
+				(GLint)globalBounds.y,
+				(GLsizei)globalBounds.w,
+				(GLsizei)globalBounds.h
+			);
+		}
+		static void EndRender()
+		{
+			ResetState();
+		}
 	};
 	class Component
 	{
@@ -44,11 +77,9 @@ namespace Enola2
 	public://这些由外部友元，或者根组件(平台兼容层)管理
 		void DoRender()
 		{
-			Enola2::ResetGLState();//强制重置状态
-			glViewport(directX, directY, bounds.w, bounds.h);//设置绘制范围（全局坐标）
-			glEnable(GL_SCISSOR_TEST);
-			glScissor(directX, directY, bounds.w, bounds.h);//裁剪界外的
+			RenderContext::StartRender({ directX, directY, bounds.w, bounds.h });
 			Render();//绘制自己的
+			RenderContext::EndRender();
 			for (auto* c : children)c->DoRender();//绘制子组件
 		}
 		void DoResize()
@@ -69,7 +100,7 @@ namespace Enola2
 		void DoInit()
 		{
 			Init();
-			for (auto* c : children)c->Init();
+			for (auto* c : children)c->DoInit();
 		}
 	public:
 		virtual ~Component() {}
