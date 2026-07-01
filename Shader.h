@@ -22,6 +22,8 @@ public:
         glAttachShader(ID, fragment);
         glLinkProgram(ID);
 
+        CheckLink(ID);
+
         glDeleteShader(vertex);
         glDeleteShader(fragment);
     }
@@ -40,6 +42,7 @@ public:
     }
 
 private:
+
     std::string LoadFile(const char* path) {
         std::ifstream file(path);
         std::stringstream ss;
@@ -51,6 +54,33 @@ private:
         GLuint shader = glCreateShader(type);
         glShaderSource(shader, 1, &src, nullptr);
         glCompileShader(shader);
+
+        CheckCompile(shader, type);
+
         return shader;
+    }
+
+    void CheckCompile(GLuint shader, GLenum type) {
+        GLint success;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+
+        if (!success) {
+            GLchar infoLog[1024];
+            glGetShaderInfoLog(shader, 1024, NULL, infoLog);
+
+            std::cout << "SHADER COMPILE ERROR\n" << infoLog << std::endl;
+        }
+    }
+
+    void CheckLink(GLuint program) {
+        GLint success;
+        glGetProgramiv(program, GL_LINK_STATUS, &success);
+
+        if (!success) {
+            GLchar infoLog[1024];
+            glGetProgramInfoLog(program, 1024, NULL, infoLog);
+
+            std::cout << "PROGRAM LINK ERROR\n" << infoLog << std::endl;
+        }
     }
 };

@@ -159,17 +159,29 @@ private:
     }
 
     // ---------------- Build Mesh (FIXED) ----------------
-    void BuildMesh() {
+    void BuildMesh()
+    {
         vertices.clear();
         indices.clear();
 
-        for (const auto& f : faces) {
+        for (const auto& f : faces)
+        {
+            glm::vec3 p0 = temp_positions[f.v[0]];
+            glm::vec3 p1 = temp_positions[f.v[1]];
+            glm::vec3 p2 = temp_positions[f.v[2]];
 
-            // triangle fan triangulation
-            for (size_t i = 1; i < f.v.size() - 1; i++) {
-                AddVertex(f, 0);
-                AddVertex(f, i);
-                AddVertex(f, i + 1);
+            glm::vec3 normal = glm::normalize(
+                glm::cross(p1 - p0, p2 - p0)
+            );
+
+            for (int i = 0; i < 3; i++)
+            {
+                Vertex vert;
+                vert.position = temp_positions[f.v[i]];
+                vert.normal = normal; 
+
+                vertices.push_back(vert);
+                indices.push_back((unsigned int)indices.size());
             }
         }
     }
