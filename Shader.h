@@ -10,7 +10,7 @@ class Shader {
 public:
     GLuint ID;
 
-    Shader(const char* vertexPath, const char* fragmentPath) {
+    void Init(const char* vertexPath, const char* fragmentPath) {
         std::string vCode = LoadFile(vertexPath);
         std::string fCode = LoadFile(fragmentPath);
 
