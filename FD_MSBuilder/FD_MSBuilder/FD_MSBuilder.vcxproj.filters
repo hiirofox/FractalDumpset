@@ -11,11 +11,19 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\main.cpp">
+    <ClCompile Include="..\..\Source\main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\External\glad\src\glad.c">
+    <ClCompile Include="..\..\Source\External\glad\src\glad.c">
       <Filter>源文件</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\Resources\fragment.glsl">
+      <Filter>源文件</Filter>
+    </None>
+    <None Include="..\..\Resources\vertex.glsl">
+      <Filter>源文件</Filter>
+    </None>
   </ItemGroup>
 </Project>
