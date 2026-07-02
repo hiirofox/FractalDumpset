@@ -263,7 +263,14 @@ in vec3 vNormal;
 out vec4 FragColor;
 
 uniform vec3 cameraPos;
+uniform vec3 skyColor;
 
+float inRangeProp(float x,float l,float h)
+{
+    if (x<l)return 0.0;
+    if (x>h)return 1.0;
+    return (x-l)/(h-l);
+}
 void main()
 {
     vec3 normal = normalize(vNormal);
@@ -280,10 +287,335 @@ void main()
 
     vec3 color = baseColor * (0.25 + diff * 0.75);
 
+    float r = length(vWorldPos-cameraPos);
+    r = inRangeProp(r,60.0,480.0);
+    r = pow(r,2.0);
+	color = color*(1.0-r)+skyColor*(r);
+
     FragColor = vec4(color, 1.0);
 }
 )";
 	GLuint terrainShader;
+
+private://失焦模糊Fx
+	GLuint dofFBO = 0;
+	GLuint colorTex = 0;
+	GLuint depthTex = 0;
+
+	GLuint dofProgram = 0;
+	GLuint quadVAO = 0;
+	GLuint quadVBO = 0;
+
+	int gWidth = 0;
+	int gHeight = 0;
+
+	void DOF_Init(int width, int height)
+	{
+		gWidth = width;
+		gHeight = height;
+
+		glGenFramebuffers(1, &dofFBO);
+		glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);
+
+		// =========================
+		// color texture
+		// =========================
+		glGenTextures(1, &colorTex);
+		glBindTexture(GL_TEXTURE_2D, colorTex);
+
+		glTexImage2D(
+			GL_TEXTURE_2D,
+			0,
+			GL_RGBA16F,
+			width,
+			height,
+			0,
+			GL_RGBA,
+			GL_FLOAT,
+			nullptr
+		);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+		glFramebufferTexture2D(
+			GL_FRAMEBUFFER,
+			GL_COLOR_ATTACHMENT0,
+			GL_TEXTURE_2D,
+			colorTex,
+			0
+		);
+
+		// =========================
+		// depth texture
+		// =========================
+		glGenTextures(1, &depthTex);
+		glBindTexture(GL_TEXTURE_2D, depthTex);
+
+		glTexImage2D(
+			GL_TEXTURE_2D,
+			0,
+			GL_DEPTH_COMPONENT24,
+			width,
+			height,
+			0,
+			GL_DEPTH_COMPONENT,
+			GL_FLOAT,
+			nullptr
+		);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+
+		glFramebufferTexture2D(
+			GL_FRAMEBUFFER,
+			GL_DEPTH_ATTACHMENT,
+			GL_TEXTURE_2D,
+			depthTex,
+			0
+		);
+
+		GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
+		glDrawBuffers(1, bufs);
+
+		GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		if (status != GL_FRAMEBUFFER_COMPLETE)
+		{
+			printf("DOF FBO incomplete: 0x%x\n", status);
+		}
+
+		glBindTexture(GL_TEXTURE_2D, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+		// ===== 2. fullscreen quad =====
+		float quad[] = {
+			-1, -1,  1, -1,  1,  1,
+			-1, -1,  1,  1, -1,  1
+		};
+
+		glGenVertexArrays(1, &quadVAO);
+		glGenBuffers(1, &quadVBO);
+
+		glBindVertexArray(quadVAO);
+		glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), 0);
+
+		// ===== 3. shader =====
+		const char* vs = R"(
+        #version 330 core
+        layout(location=0) in vec2 aPos;
+        out vec2 uv;
+        void main() {
+            uv = aPos * 0.5 + 0.5;
+            gl_Position = vec4(aPos,0,1);
+        }
+    )";
+
+		const char* fs = R"(
+#version 330 core
+
+in vec2 uv;
+out vec4 FragColor;
+
+uniform sampler2D uColor;
+uniform sampler2D uDepth;
+
+uniform float zNear;
+uniform float zFar;
+
+uniform float focalDistance;
+uniform float focusRange;
+uniform float maxBlurRadius;
+
+float LinearizeDepth(float depth)
+{
+    float z = depth * 2.0 - 1.0;
+
+    return (2.0 * zNear * zFar) /
+           (zFar + zNear - z * (zFar - zNear));
+}
+
+
+
+float GetBlurAmount(float linearDepth)
+{
+    float d = abs(linearDepth - focalDistance);
+
+    float b = d / max(focusRange, 0.0001);
+
+    // 比 clamp 更柔和，不会突然从清晰跳到模糊
+    b = smoothstep(0.0, 1.0, b);
+
+    return clamp(b, 0.0, 1.0);
+}
+
+vec3 BlurColor(vec2 uv, float radius)
+{
+    if (radius < 0.5)
+        return texture(uColor, uv).rgb;
+
+    vec2 texel = 1.0 / vec2(textureSize(uColor, 0));
+
+    float centerRawDepth = texture(uDepth, uv).r;
+    float centerDepth = LinearizeDepth(centerRawDepth);
+
+    vec3 sum = texture(uColor, uv).rgb;
+    float weightSum = 1.0;
+
+    // 近似圆形光圈采样，比十字采样自然很多
+    vec2 samples[24] = vec2[](
+        vec2( 0.000,  0.000),
+
+        vec2( 0.500,  0.000),
+        vec2(-0.500,  0.000),
+        vec2( 0.000,  0.500),
+        vec2( 0.000, -0.500),
+
+        vec2( 0.354,  0.354),
+        vec2(-0.354,  0.354),
+        vec2( 0.354, -0.354),
+        vec2(-0.354, -0.354),
+
+        vec2( 1.000,  0.000),
+        vec2(-1.000,  0.000),
+        vec2( 0.000,  1.000),
+        vec2( 0.000, -1.000),
+
+        vec2( 0.707,  0.707),
+        vec2(-0.707,  0.707),
+        vec2( 0.707, -0.707),
+        vec2(-0.707, -0.707),
+
+        vec2( 0.923,  0.382),
+        vec2(-0.923,  0.382),
+        vec2( 0.923, -0.382),
+        vec2(-0.923, -0.382),
+
+        vec2( 0.382,  0.923),
+        vec2(-0.382,  0.923),
+        vec2( 0.382, -0.923)
+    );
+
+    for (int i = 0; i < 24; i++)
+    {
+        vec2 suv = uv + samples[i] * texel * radius;
+
+        vec3 sampleColor = texture(uColor, suv).rgb;
+
+        float sampleRawDepth = texture(uDepth, suv).r;
+        float sampleDepth = LinearizeDepth(sampleRawDepth);
+
+        float sampleBlur = GetBlurAmount(sampleDepth);
+
+        // 深度保护：
+        // 深度差太大的像素少混合，避免山边缘、地平线出现糊成一团的假边
+        float depthDiff = abs(sampleDepth - centerDepth);
+
+// 更宽松的深度保护。
+// 不再把深度差大的采样直接压到 0，山边缘会跟着糊开。
+float depthProtect = 1.0 - smoothstep(
+    focusRange * 0.5,
+    focusRange * 8.0,
+    depthDiff
+);
+
+// 最低保留 35% 的跨深度采样权重。
+// 这个值越大，边缘越糊，但也越容易有 halo。
+float depthWeight = mix(0.35, 1.0, depthProtect);
+
+// 离焦区域本身采样权重更高
+float blurWeight = mix(0.5, 1.0, sampleBlur);
+
+float w = depthWeight * blurWeight;
+
+        sum += sampleColor * w;
+        weightSum += w;
+    }
+
+    return sum / max(weightSum, 0.0001);
+}
+
+void main()
+{
+    float rawDepth = texture(uDepth, uv).r;
+
+    float linearDepth = LinearizeDepth(rawDepth);
+
+    float blurAmount = GetBlurAmount(linearDepth);
+
+    vec3 sharp = texture(uColor, uv).rgb;
+    vec3 blurred = BlurColor(uv, blurAmount * maxBlurRadius);
+
+    // 再 smooth 一次，避免 blurAmount 线性混合太假
+    blurAmount = smoothstep(0.0, 1.0, blurAmount);
+
+    vec3 color = mix(sharp, blurred, blurAmount);
+
+    FragColor = vec4(color, 1.0);
+}
+)";
+		dofProgram = CreateShaderProgram(vs, fs);
+	}
+	void ApplyDepthOfField(GLuint outfbo)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, outfbo);
+
+		glViewport(0, 0, gWidth, gHeight);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(0, 0, gWidth, gHeight);
+
+		glDisable(GL_DEPTH_TEST);
+		glDepthMask(GL_FALSE);
+		glDisable(GL_BLEND);
+
+		glUseProgram(dofProgram);
+
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, colorTex);
+		glUniform1i(
+			glGetUniformLocation(dofProgram, "uColor"),
+			0
+		);
+
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(GL_TEXTURE_2D, depthTex);
+		glUniform1i(
+			glGetUniformLocation(dofProgram, "uDepth"),
+			1
+		);
+
+		// 这两个必须和你的 projection 保持一致。
+		// 例如：
+		// glm::perspective(..., 0.1f, 2000.0f)
+		glUniform1f(
+			glGetUniformLocation(dofProgram, "zNear"),
+			0.1f
+		);
+
+		glUniform1f(
+			glGetUniformLocation(dofProgram, "zFar"),
+			10000.0f
+		);
+
+		glUniform1f(glGetUniformLocation(dofProgram, "focalDistance"), 120.0);
+		glUniform1f(glGetUniformLocation(dofProgram, "focusRange"), 300.0f);
+		glUniform1f(glGetUniformLocation(dofProgram, "maxBlurRadius"), 13.0f);
+
+		glBindVertexArray(quadVAO);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+		glBindVertexArray(0);
+
+		glDepthMask(GL_TRUE);
+	}
+
 private://terrain 
 	glm::mat4 model = glm::mat4(1.0f);
 
@@ -743,12 +1075,33 @@ public:
 		terrainShader = CreateShaderProgram(terrainVertex, terrainFragment);
 		InitTerrain(terrainSize, 512);
 		InitHeightMap();
+		DOF_Init(GetBounds().w, GetBounds().h);
 	}
+
+	glm::vec3 skyColor = { 0.5f, 0.8f, 0.8f };
+
 	void Render(GLuint fbo) override//一定要画在这个fbo里
 	{
-		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);//先绘制到fx的fbo
+
+
+
+		glViewport(0, 0, gWidth, gHeight);
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(0, 0, gWidth, gHeight);
+
 		glEnable(GL_DEPTH_TEST);
-		glClearColor(0.5f, 0.8f, 0.8f, 1.0f);
+		glDepthFunc(GL_LESS);
+		glDepthMask(GL_TRUE);
+
+		glClearDepth(1.0f);
+		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+
+
+		glEnable(GL_DEPTH_TEST);
+		glClearColor(skyColor.x, skyColor.y, skyColor.z, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		glUseProgram(terrainShader);
@@ -760,6 +1113,13 @@ public:
 		glUniform1f(
 			glGetUniformLocation(terrainShader, "terrainSize"),
 			terrainSize
+		);
+
+		glUniform3f(
+			glGetUniformLocation(terrainShader, "skyColor"),
+			skyColor.x,
+			skyColor.y,
+			skyColor.z
 		);
 
 		glUniformMatrix4fv(
@@ -795,8 +1155,10 @@ public:
 			cameraPos.z
 		);
 
-
 		DrawTerrain();
+
+		ApplyDepthOfField(fbo);
+
 	}
 	void Resize() override
 	{
