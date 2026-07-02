@@ -18,6 +18,7 @@ namespace Enola2
 	{
 		float x, y, w, h;
 	};
+	
 	class RenderContext
 	{
 	private:
@@ -63,6 +64,193 @@ namespace Enola2
 		{
 			ResetState();
 		}
+	}; class RenderContext2
+	{
+	private:
+		struct Target
+		{
+			GLuint fbo = 0;
+			GLuint color = 0;
+			GLuint depth = 0;
+			int w = 0;
+			int h = 0;
+		};
+
+		static inline Target target;
+		static inline Rectf currentBounds{ 0,0,0,0 };
+
+	private:
+		static void EnsureTarget(int w, int h)
+		{
+			if (w <= 0 || h <= 0)
+				return;
+
+			if (target.fbo != 0 && target.w == w && target.h == h)
+				return;
+
+			if (target.fbo)
+			{
+				glDeleteFramebuffers(1, &target.fbo);
+				glDeleteTextures(1, &target.color);
+				glDeleteTextures(1, &target.depth);
+			}
+
+			target.w = w;
+			target.h = h;
+
+			glGenFramebuffers(1, &target.fbo);
+			glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+
+			// color attachment
+			glGenTextures(1, &target.color);
+			glBindTexture(GL_TEXTURE_2D, target.color);
+			glTexImage2D(
+				GL_TEXTURE_2D,
+				0,
+				GL_RGBA8,
+				w,
+				h,
+				0,
+				GL_RGBA,
+				GL_UNSIGNED_BYTE,
+				nullptr
+			);
+
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+			glFramebufferTexture2D(
+				GL_FRAMEBUFFER,
+				GL_COLOR_ATTACHMENT0,
+				GL_TEXTURE_2D,
+				target.color,
+				0
+			);
+
+			// depth attachment
+			glGenTextures(1, &target.depth);
+			glBindTexture(GL_TEXTURE_2D, target.depth);
+			glTexImage2D(
+				GL_TEXTURE_2D,
+				0,
+				GL_DEPTH_COMPONENT24,
+				w,
+				h,
+				0,
+				GL_DEPTH_COMPONENT,
+				GL_FLOAT,
+				nullptr
+			);
+
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+			glFramebufferTexture2D(
+				GL_FRAMEBUFFER,
+				GL_DEPTH_ATTACHMENT,
+				GL_TEXTURE_2D,
+				target.depth,
+				0
+			);
+
+			GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
+			glDrawBuffers(1, bufs);
+
+			GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+			if (status != GL_FRAMEBUFFER_COMPLETE)
+			{
+				printf("RenderContext2 FBO incomplete: 0x%x\n", status);
+			}
+
+			glBindTexture(GL_TEXTURE_2D, 0);
+			glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		}
+
+		static void ResetState()
+		{
+			glUseProgram(0);
+			glBindVertexArray(0);
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+			glActiveTexture(GL_TEXTURE0);
+
+			glDisable(GL_BLEND);
+			glDisable(GL_CULL_FACE);
+			glDisable(GL_STENCIL_TEST);
+
+			glEnable(GL_DEPTH_TEST);
+			glDepthFunc(GL_LESS);
+			glDepthMask(GL_TRUE);
+
+			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+			glLineWidth(1.0f);
+
+			glEnable(GL_SCISSOR_TEST);
+		}
+
+	public:
+		static GLuint StartRender(Rectf globalBounds)
+		{
+			currentBounds = globalBounds;
+
+			int w = (int)globalBounds.w;
+			int h = (int)globalBounds.h;
+
+			EnsureTarget(w, h);
+			ResetState();
+
+			glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+
+			GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
+			glDrawBuffers(1, bufs);
+
+			// 关键：Render() 里面是干净的 0,0,w,h
+			glViewport(0, 0, w, h);
+
+			glEnable(GL_SCISSOR_TEST);
+			glScissor(0, 0, w, h);
+
+			return target.fbo;
+		}
+
+		static void EndRender()
+		{
+			int x = (int)currentBounds.x;
+			int y = (int)currentBounds.y;
+			int w = (int)currentBounds.w;
+			int h = (int)currentBounds.h;
+
+			// 从组件 framebuffer 读
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, target.fbo);
+			glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+			// 写回默认 framebuffer
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+			glDisable(GL_DEPTH_TEST);
+			glDepthMask(GL_FALSE);
+
+			glEnable(GL_SCISSOR_TEST);
+			glScissor(x, y, w, h);
+
+			glBlitFramebuffer(
+				0, 0, target.w, target.h,
+				x, y, x + w, y + h,
+				GL_COLOR_BUFFER_BIT,
+				GL_NEAREST
+			);
+
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+			glDepthMask(GL_TRUE);
+			ResetState();
+		}
 	};
 	class Component
 	{
@@ -76,9 +264,9 @@ namespace Enola2
 	public://这些由外部友元，或者根组件(平台兼容层)管理
 		void DoRender()
 		{
-			RenderContext::StartRender({ directX, directY, bounds.w, bounds.h });
-			Render();//绘制自己的
-			RenderContext::EndRender();
+            auto frameBuffer = RenderContext2::StartRender({ directX, directY, bounds.w, bounds.h });
+			Render(frameBuffer);//绘制自己的
+            RenderContext2::EndRender();
 			for (auto* c : children)c->DoRender();//绘制子组件
 		}
 		void DoResize()
@@ -113,7 +301,7 @@ namespace Enola2
 			children.push_back(&c);
 			c.father = this;
 		}
-		virtual void Render()
+		virtual void Render(GLuint frameBuffer)
 		{
 
 		}
@@ -129,6 +317,10 @@ namespace Enola2
 		Rectf GetBounds()
 		{
 			return bounds;
+		}
+		Rectf GetLocalBounds()
+		{
+			return { directX,directY,bounds.w,bounds.h };
 		}
 	};
 }

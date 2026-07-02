@@ -19,20 +19,27 @@ void main()
 {
     if (isGridDraw == 1)
     {
-        vec3 color = {0.0,1.5,1.5};
+        vec3 color = {0.0,2.5,2.5};
         float r = length(FragPos-cameraPos);
-        r = inRangeProp(r,0.0,20.0);
+        r = inRangeProp(r,0.0,60.0);
         color = color * pow(1.0-r,2.0);
         FragColor = vec4(color, 1.0);
     }
     else
     {
-        vec3 lightPass = lightPos-FragPos;
-        vec3 clv = cross(lightPass,Normal);
-        float lv = length(clv);
-        lv = max(lv, 0.0001);
         vec3 color = {1.0,1.0,1.0};
-        color /= lv;
+        
+        vec3 lightPass = lightPos-FragPos;
+        float dotv = dot(normalize(lightPass),normalize(Normal));
+        if (dotv<0)dotv = 0;
+        color *= pow(inRangeProp(dotv,-0.1,1.0),0.95);
+        
+        //vec3 lightPass = lightPos-FragPos;
+        //vec3 clv = cross(lightPass,Normal);
+        //float lv = length(clv);
+        //lv = max(lv, 0.0001);
+        //color /= lv;
+        
         FragColor = vec4(color,1.0);
     }
 }

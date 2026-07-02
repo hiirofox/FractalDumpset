@@ -20,8 +20,8 @@ void main()
     if (isGridDraw==1)
     {
         // ²¨ÀË£¨Ö»¸Äy£©
-        worldPos.y += sin(worldPos.x * 1.0 + time*20.0) * 0.05;
-        worldPos.y += cos(worldPos.z * 1.0 + time*20.0) * 0.05;
+        worldPos.y += sin(worldPos.x * 1.0 + time*20.0) * 0.025;
+        worldPos.y += cos(worldPos.z * 1.0 + time*20.0) * 0.025;
     }
     FragPos = worldPos.xyz;
 

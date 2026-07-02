@@ -166,6 +166,32 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 		ReleaseCapture();
 		return 0;
 
+
+	case WM_MBUTTONDOWN:
+	{
+		SetCapture(hwnd);
+
+		MouseEvent e;
+		e.x = GET_X_LPARAM(lParam);
+		e.y = GET_Y_LPARAM(lParam);
+		e.state = MouseState::WheelDown; // 按住中键
+		EventListener::DispatchMouse(e);
+		return 0;
+	}
+
+	case WM_MBUTTONUP:
+	{
+		MouseEvent e;
+		e.x = GET_X_LPARAM(lParam);
+		e.y = GET_Y_LPARAM(lParam);
+		e.state = MouseState::WheelUp; // 松开中键
+		EventListener::DispatchMouse(e);
+
+		ReleaseCapture();
+		return 0;
+	}
+
+
 	case WM_MOUSEWHEEL:
 	{
 		POINT p;
@@ -181,6 +207,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 		EventListener::DispatchMouse(e);
 		return 0;
 	}
+	
 	}
 
 	return DefWindowProc(hwnd, msg, wParam, lParam);
