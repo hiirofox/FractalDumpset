@@ -1,4 +1,6 @@
 ﻿#pragma once
+
+#include "../Resources_Resources.rsh"
 #include <windows.h>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -821,7 +823,7 @@ private:
 	GLuint gridVAO = 0;
 	GLuint gridVBO = 0;
 	int gridLineCount = 0;
-	
+
 public:
 	void InitGrid(float halfSize = 10.0f, int lines = 200)
 	{
@@ -1050,13 +1052,19 @@ private:
 		10000.0f
 	);
 public:
+	std::string rspath = "D:/Projects/c++/FractalDumpset/Resources/";
+	void SetResourcesPath(std::string rspath)
+	{
+		this->rspath = rspath+"/";
+		printf("rspath:%s\n", rspath.c_str());
+	}
 	void Init() override
 	{
 		grid.InitGrid(10, 200);
 
-		objloader.LoadObj("D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora.obj", "D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora.mtl");
+		objloader.LoadObj(rspath + "zeraora/zeraora.obj", rspath + "zeraora/zeraora.mtl");
 		objloader.CreateVAOVBO();
-		
+
 		gridProgram = shader.CompileShaderGLSL(gridVertexSL, gridFragmentSL);
 		modelProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
 		viewCtrl.SetCamera(
@@ -1093,15 +1101,21 @@ public:
 class MyRootComponent :public Enola2::Component, public Enola2::EventListener
 {
 private:
+	std::string rspath = "";
 	Model v3d;
 public:
 	MyRootComponent()
 	{
 		AddChild(v3d);
+		rspath = Resources::UnpackResources();
+		v3d.SetResourcesPath(rspath);
+	}
+	~MyRootComponent()
+	{
+		Resources::ClearTmpResources(rspath);
 	}
 	void Init() override
 	{
-
 	}
 	void Render(GLuint fbo) override
 	{

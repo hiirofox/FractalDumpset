@@ -1,0 +1,410 @@
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+struct PackedFile {
+    fs::path absolutePath;
+    std::string relativePath;
+    std::vector<unsigned char> data;
+};
+
+static std::string SanitizeIdentifier(const std::string& name) {
+    std::string out;
+    out.reserve(name.size() + 1);
+
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch) || ch == '_') {
+            out.push_back(static_cast<char>(ch));
+        }
+        else {
+            out.push_back('_');
+        }
+    }
+
+    if (out.empty()) {
+        out = "Resources";
+    }
+
+    if (std::isdigit(static_cast<unsigned char>(out.front()))) {
+        out.insert(out.begin(), '_');
+    }
+
+    return out;
+}
+
+static std::string CppStringLiteral(const std::string& text) {
+    std::ostringstream oss;
+    oss << '"';
+
+    for (unsigned char ch : text) {
+        switch (ch) {
+        case '\\': oss << "\\\\"; break;
+        case '"':  oss << "\\\""; break;
+        case '\n': oss << "\\n";  break;
+        case '\r': oss << "\\r";  break;
+        case '\t': oss << "\\t";  break;
+        default:
+            if (ch >= 0x20 && ch <= 0x7E) {
+                oss << static_cast<char>(ch);
+            }
+            else {
+                oss << '\\'
+                    << static_cast<char>('0' + ((ch >> 6) & 7))
+                    << static_cast<char>('0' + ((ch >> 3) & 7))
+                    << static_cast<char>('0' + (ch & 7));
+            }
+            break;
+        }
+    }
+
+    oss << '"';
+    return oss.str();
+}
+
+static std::vector<unsigned char> ReadBinaryFile(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) {
+        throw std::runtime_error("Cannot open file: " + path.string());
+    }
+
+    const std::ifstream::pos_type endPos = in.tellg();
+    if (endPos < 0) {
+        throw std::runtime_error("Cannot get file size: " + path.string());
+    }
+
+    const auto size64 = static_cast<std::uintmax_t>(endPos);
+    if (size64 > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::runtime_error("File is too large for this build: " + path.string());
+    }
+
+    std::vector<unsigned char> data(static_cast<std::size_t>(size64));
+    in.seekg(0, std::ios::beg);
+
+    if (!data.empty()) {
+        in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        if (!in) {
+            throw std::runtime_error("Cannot read file completely: " + path.string());
+        }
+    }
+
+    return data;
+}
+
+static std::vector<PackedFile> CollectFiles(const fs::path& root) {
+    std::vector<PackedFile> files;
+
+    const auto options = fs::directory_options::skip_permission_denied;
+    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root, options)) {
+        std::error_code ec;
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+
+        fs::path rel = fs::relative(entry.path(), root, ec);
+        if (ec) {
+            throw std::runtime_error("Cannot make relative path: " + entry.path().string());
+        }
+
+        std::string relString = rel.generic_string();
+        files.push_back(PackedFile{ entry.path(), relString, {} });
+    }
+
+    std::sort(files.begin(), files.end(), [](const PackedFile& a, const PackedFile& b) {
+        return a.relativePath < b.relativePath;
+        });
+
+    for (PackedFile& file : files) {
+        file.data = ReadBinaryFile(file.absolutePath);
+    }
+
+    return files;
+}
+
+static void WriteByteArray(std::ostream& out, const std::vector<unsigned char>& data, std::size_t index) {
+    if (data.empty()) {
+        out << "static inline constexpr unsigned char ResourceData_" << index << "[1] = {0};\n\n";
+        return;
+    }
+
+    out << "static inline constexpr unsigned char ResourceData_" << index << "[] = {\n";
+
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        if (i % 12 == 0) {
+            out << "    ";
+        }
+
+        out << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+            << static_cast<int>(data[i]) << std::dec << std::nouppercase;
+
+        if (i + 1 != data.size()) {
+            out << ", ";
+        }
+
+        if (i % 12 == 11 || i + 1 == data.size()) {
+            out << '\n';
+        }
+    }
+
+    out << "};\n\n";
+}
+
+static void WriteHeader(
+    const fs::path& outputPath,
+    const std::string& originalFolderName,
+    const std::string& namespaceName,
+    const std::vector<PackedFile>& files
+) {
+    std::ofstream out(outputPath, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error("Cannot create output header: " + outputPath.string());
+    }
+
+    out << "#pragma once\n\n";
+    out << "// Generated by ResourcesPacker. Do not edit manually.\n";
+    out << "// Original folder name: " << originalFolderName << "\n\n";
+
+    out << "#include <algorithm>\n";
+    out << "#include <chrono>\n";
+    out << "#include <cstddef>\n";
+    out << "#include <cstdint>\n";
+    out << "#include <filesystem>\n";
+    out << "#include <fstream>\n";
+    out << "#include <mutex>\n";
+    out << "#include <random>\n";
+    out << "#include <sstream>\n";
+    out << "#include <stdexcept>\n";
+    out << "#include <string>\n";
+    out << "#include <system_error>\n";
+    out << "#include <vector>\n\n";
+
+    out << "namespace " << namespaceName << " {\n\n";
+    out << "namespace detail {\n\n";
+
+    out << "struct ResourceEntry {\n";
+    out << "    const char* path;\n";
+    out << "    const unsigned char* data;\n";
+    out << "    std::size_t size;\n";
+    out << "};\n\n";
+
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        WriteByteArray(out, files[i].data, i);
+    }
+
+    out << "static inline constexpr std::size_t ResourceCount = " << files.size() << ";\n";
+
+    if (files.empty()) {
+        out << "static inline constexpr ResourceEntry Resources[1] = {{nullptr, nullptr, 0}};\n\n";
+    }
+    else {
+        out << "static inline constexpr ResourceEntry Resources[ResourceCount] = {\n";
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            out << "    {"
+                << CppStringLiteral(files[i].relativePath)
+                << ", ResourceData_" << i
+                << ", " << files[i].data.size()
+                << "}";
+
+            if (i + 1 != files.size()) {
+                out << ",";
+            }
+
+            out << "\n";
+        }
+        out << "};\n\n";
+    }
+
+    out << R"HDR(
+inline std::mutex& TmpMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+inline std::vector<std::string>& TmpPaths() {
+    static std::vector<std::string> paths;
+    return paths;
+}
+
+inline std::filesystem::path MakeUniqueTmpDir() {
+    namespace fs = std::filesystem;
+
+    const fs::path base = fs::temp_directory_path();
+    std::random_device rd;
+    std::mt19937_64 rng(rd());
+
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+
+        std::ostringstream name;
+        name << "Resources_)HDR" << namespaceName << R"HDR(_" << now << "_" << rng();
+
+        fs::path target = base / name.str();
+        std::error_code ec;
+        if (fs::create_directory(target, ec)) {
+            return target;
+        }
+    }
+
+    throw std::runtime_error("Cannot create a unique temporary resources directory.");
+}
+
+inline bool SamePath(const std::filesystem::path& a, const std::filesystem::path& b) {
+    namespace fs = std::filesystem;
+
+    std::error_code ecA;
+    std::error_code ecB;
+    fs::path ca = fs::weakly_canonical(a, ecA);
+    fs::path cb = fs::weakly_canonical(b, ecB);
+
+    if (!ecA && !ecB) {
+        return ca == cb;
+    }
+
+    std::error_code absEcA;
+    std::error_code absEcB;
+    fs::path aa = fs::absolute(a, absEcA).lexically_normal();
+    fs::path ab = fs::absolute(b, absEcB).lexically_normal();
+    return !absEcA && !absEcB && aa == ab;
+}
+
+} // namespace detail
+
+inline std::string UnpackResources() {
+    namespace fs = std::filesystem;
+
+    const fs::path target = detail::MakeUniqueTmpDir();
+
+    try {
+        for (std::size_t i = 0; i < detail::ResourceCount; ++i) {
+            const detail::ResourceEntry& entry = detail::Resources[i];
+            const fs::path outputFile = target / fs::path(entry.path);
+
+            const fs::path parent = outputFile.parent_path();
+            if (!parent.empty()) {
+                fs::create_directories(parent);
+            }
+
+            std::ofstream out(outputFile, std::ios::binary);
+            if (!out) {
+                throw std::runtime_error("Cannot create resource file: " + outputFile.string());
+            }
+
+            if (entry.size > 0) {
+                out.write(reinterpret_cast<const char*>(entry.data), static_cast<std::streamsize>(entry.size));
+                if (!out) {
+                    throw std::runtime_error("Cannot write resource file: " + outputFile.string());
+                }
+            }
+        }
+    } catch (...) {
+        std::error_code ec;
+        fs::remove_all(target, ec);
+        throw;
+    }
+
+    std::string result = fs::absolute(target).lexically_normal().string();
+    {
+        std::lock_guard<std::mutex> lock(detail::TmpMutex());
+        detail::TmpPaths().push_back(result);
+    }
+
+    return result;
+}
+
+inline void ClearTmpResources(std::string path) {
+    namespace fs = std::filesystem;
+
+    if (path.empty()) {
+        return;
+    }
+
+    fs::path requested = fs::path(path);
+    std::lock_guard<std::mutex> lock(detail::TmpMutex());
+
+    auto& paths = detail::TmpPaths();
+    auto it = std::find_if(paths.begin(), paths.end(), [&](const std::string& actual) {
+        return detail::SamePath(requested, fs::path(actual));
+    });
+
+    if (it == paths.end()) {
+        return;
+    }
+
+    std::error_code ec;
+    fs::remove_all(fs::path(*it), ec);
+    paths.erase(it);
+}
+
+)HDR";
+
+    out << "} // namespace " << namespaceName << "\n";
+
+    if (!out) {
+        throw std::runtime_error("Failed while writing output header: " + outputPath.string());
+    }
+}
+
+static void PrintUsage(const char* exe) {
+    std::cerr << "Usage:\n"
+        << "  " << exe << " <assets_folder> [output_folder]\n\n"
+        << "Example:\n"
+        << "  " << exe << " ./Assets\n";
+}
+
+int main(int argc, char** argv) {
+    try {
+        if (argc != 2 && argc != 3) {
+            PrintUsage(argv[0]);
+            return 1;
+        }
+
+        fs::path input = fs::absolute(fs::path(argv[1])).lexically_normal();
+        if (!fs::exists(input) || !fs::is_directory(input)) {
+            throw std::runtime_error("Input path is not a directory: " + input.string());
+        }
+
+        fs::path outputDir = (argc == 3)
+            ? fs::absolute(fs::path(argv[2])).lexically_normal()
+            : fs::current_path();
+
+        fs::create_directories(outputDir);
+
+        std::string folderName = input.filename().string();
+        if (folderName.empty()) {
+            folderName = input.parent_path().filename().string();
+        }
+
+        const std::string namespaceName = SanitizeIdentifier(folderName);
+        const fs::path headerPath = outputDir / ("Resources_" + namespaceName + ".h");
+
+        if (folderName != namespaceName) {
+            std::cerr << "Note: folder name '" << folderName
+                << "' is not a valid C++ namespace name; using namespace '"
+                << namespaceName << "'.\n";
+        }
+
+        std::vector<PackedFile> files = CollectFiles(input);
+        WriteHeader(headerPath, folderName, namespaceName, files);
+
+        std::cout << "Generated: " << headerPath.string() << '\n';
+        std::cout << "Namespace: " << namespaceName << '\n';
+        std::cout << "Packed files: " << files.size() << '\n';
+
+        return 0;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "ResourcesPacker error: " << e.what() << '\n';
+        return 1;
+    }
+}

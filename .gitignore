@@ -366,3 +366,6 @@ FodyWeavers.xsd
 *.obj
 *.mtl
 *.png
+
+# resources header
+*.rsh
