@@ -6,7 +6,7 @@
 #include <sstream>
 #include <iostream>
 
-#include "External/glad/include/glad/glad.h"
+//#include "External/glad/include/glad/glad.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"

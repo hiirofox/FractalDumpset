@@ -1,878 +1,14 @@
 ﻿#pragma once
 #include <windows.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include "Test3DObj.h"
+#include "TestTerrain.h"
 
-#include <array>
-#include <random>
-#include <algorithm>
-#include <cmath>
-class PerlinNoise2D
+class ViewController :public Enola2::EventListener
 {
-private:
-	std::array<int, 512> p;
-
-	static float Fade(float t)
-	{
-		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-	}
-
-	static float Lerp(float a, float b, float t)
-	{
-		return a + t * (b - a);
-	}
-
-	static float Grad(int hash, float x, float y)
-	{
-		switch (hash & 7)
-		{
-		case 0: return  x + y;
-		case 1: return -x + y;
-		case 2: return  x - y;
-		case 3: return -x - y;
-		case 4: return  x;
-		case 5: return -x;
-		case 6: return  y;
-		case 7: return -y;
-		default: return 0.0f;
-		}
-	}
-
-public:
-	PerlinNoise2D(unsigned int seed = 1337)
-	{
-		std::array<int, 256> perm;
-
-		for (int i = 0; i < 256; i++)
-			perm[i] = i;
-
-		std::mt19937 rng(seed);
-		std::shuffle(perm.begin(), perm.end(), rng);
-
-		for (int i = 0; i < 512; i++)
-			p[i] = perm[i & 255];
-	}
-
-	float Noise(float x, float y) const
-	{
-		int X = (int)floor(x) & 255;
-		int Y = (int)floor(y) & 255;
-
-		float xf = x - floor(x);
-		float yf = y - floor(y);
-
-		float u = Fade(xf);
-		float v = Fade(yf);
-
-		int aa = p[p[X] + Y];
-		int ab = p[p[X] + Y + 1];
-		int ba = p[p[X + 1] + Y];
-		int bb = p[p[X + 1] + Y + 1];
-
-		float x1 = Lerp(
-			Grad(aa, xf, yf),
-			Grad(ba, xf - 1.0f, yf),
-			u
-		);
-
-		float x2 = Lerp(
-			Grad(ab, xf, yf - 1.0f),
-			Grad(bb, xf - 1.0f, yf - 1.0f),
-			u
-		);
-
-		return Lerp(x1, x2, v); // 大约 [-1, 1]
-	}
-
-	float FBM(float x, float y, int octaves, float lacunarity, float persistence) const
-	{
-		float sum = 0.0f;
-		float amp = 1.0f;
-		float freq = 1.0f;
-		float norm = 0.0f;
-
-		for (int i = 0; i < octaves; i++)
-		{
-			sum += Noise(x * freq, y * freq) * amp;
-			norm += amp;
-
-			freq *= lacunarity;
-			amp *= persistence;
-		}
-
-		return sum / norm; // [-1, 1]
-	}
-
-	float Ridged(float x, float y, int octaves, float lacunarity, float persistence) const
-	{
-		float sum = 0.0f;
-		float amp = 1.0f;
-		float freq = 1.0f;
-		float norm = 0.0f;
-
-		for (int i = 0; i < octaves; i++)
-		{
-			float n = Noise(x * freq, y * freq);
-			n = 1.0f - fabs(n);
-			n = n * n;
-
-			sum += n * amp;
-			norm += amp;
-
-			freq *= lacunarity;
-			amp *= persistence;
-		}
-
-		return sum / norm; // [0, 1]
-	}
-};
-
-
-GLuint CompileShader(GLenum type, const char* source)
-{
-	GLuint shader = glCreateShader(type);
-
-	glShaderSource(shader, 1, &source, nullptr);
-	glCompileShader(shader);
-
-	GLint success = 0;
-	glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-
-	if (!success)
-	{
-		char log[2048];
-		glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-
-		if (type == GL_VERTEX_SHADER)
-			printf("Vertex shader compile error:\n%s\n", log);
-		else if (type == GL_FRAGMENT_SHADER)
-			printf("Fragment shader compile error:\n%s\n", log);
-		else
-			printf("Shader compile error:\n%s\n", log);
-
-		glDeleteShader(shader);
-		return 0;
-	}
-
-	return shader;
-}
-GLuint CreateShaderProgram(const char* vertexSource, const char* fragmentSource)
-{
-	GLuint vertexShader = CompileShader(GL_VERTEX_SHADER, vertexSource);
-	GLuint fragmentShader = CompileShader(GL_FRAGMENT_SHADER, fragmentSource);
-
-	if (!vertexShader || !fragmentShader)
-		return 0;
-
-	GLuint program = glCreateProgram();
-
-	glAttachShader(program, vertexShader);
-	glAttachShader(program, fragmentShader);
-
-	glLinkProgram(program);
-
-	GLint success = 0;
-	glGetProgramiv(program, GL_LINK_STATUS, &success);
-
-	if (!success)
-	{
-		char log[2048];
-		glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-		printf("Shader program link error:\n%s\n", log);
-
-		glDeleteShader(vertexShader);
-		glDeleteShader(fragmentShader);
-		glDeleteProgram(program);
-
-		return 0;
-	}
-
-	// 链接成功后，shader object 可以删除
-	// program 已经保存了最终链接结果
-	glDeleteShader(vertexShader);
-	glDeleteShader(fragmentShader);
-
-	return program;
-}
-
-class World :public Enola2::Component, public Enola2::EventListener
-{
-private://glsl 
-	//顶点数据
-	const char* terrainVertex = R"(
-#version 330 core
-
-layout(location = 0) in vec2 aXZ;
-layout(location = 1) in vec2 aUV;
-
-out vec2 vUV;
-out vec3 vWorldPos;
-out vec3 vNormal;
-
-uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
-
-uniform sampler2D heightMap;
-uniform float terrainSize;
-
-float getHeight(vec2 uv)
-{
-    return texture(heightMap, uv).r;
-}
-
-vec3 getNormal(vec2 uv)
-{
-    vec2 texel = 1.0 / vec2(textureSize(heightMap, 0));
-
-    float hL = getHeight(uv - vec2(texel.x, 0.0));
-    float hR = getHeight(uv + vec2(texel.x, 0.0));
-    float hD = getHeight(uv - vec2(0.0, texel.y));
-    float hU = getHeight(uv + vec2(0.0, texel.y));
-
-    float worldStep = terrainSize / float(textureSize(heightMap, 0).x - 1);
-
-    return normalize(vec3(hL - hR, 2.0 * worldStep, hD - hU));
-}
-
-void main()
-{
-    float y = getHeight(aUV);
-
-    vec3 localPos = vec3(aXZ.x, y, aXZ.y);
-
-    vec4 world = model * vec4(localPos, 1.0);
-
-    vWorldPos = world.xyz;
-    vUV = aUV;
-
-    mat3 normalMat = transpose(inverse(mat3(model)));
-    vNormal = normalize(normalMat * getNormal(aUV));
-
-    gl_Position = projection * view * world;
-}
-)";
-	//着色器
-	const char* terrainFragment = R"(
-#version 330 core
-
-in vec2 vUV;
-in vec3 vWorldPos;
-in vec3 vNormal;
-
-out vec4 FragColor;
-
-uniform vec3 cameraPos;
-uniform vec3 skyColor;
-
-float inRangeProp(float x,float l,float h)
-{
-    if (x<l)return 0.0;
-    if (x>h)return 1.0;
-    return (x-l)/(h-l);
-}
-void main()
-{
-    vec3 normal = normalize(vNormal);
-
-    vec3 lightDir = normalize(vec3(-0.3, 1.0, 0.4));
-
-    float diff = max(dot(normal, lightDir), 0.0);
-
-    vec3 baseColor = mix(
-        vec3(0.08, 0.35, 0.10),
-        vec3(0.45, 0.38, 0.22),
-        smoothstep(0.0, 5.0, vWorldPos.y)
-    );
-
-    vec3 color = baseColor * (0.25 + diff * 0.75);
-
-    float r = length(vWorldPos-cameraPos);
-    r = inRangeProp(r,60.0,480.0);
-    r = pow(r,2.0);
-	color = color*(1.0-r)+skyColor*(r);
-
-    FragColor = vec4(color, 1.0);
-}
-)";
-	GLuint terrainShader;
-
-private://失焦模糊Fx
-	GLuint dofFBO = 0;
-	GLuint colorTex = 0;
-	GLuint depthTex = 0;
-
-	GLuint dofProgram = 0;
-	GLuint quadVAO = 0;
-	GLuint quadVBO = 0;
-
-	int gWidth = 0;
-	int gHeight = 0;
-
-	void DOF_Init(int width, int height)
-	{
-		gWidth = width;
-		gHeight = height;
-
-		glGenFramebuffers(1, &dofFBO);
-		glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);
-
-		// =========================
-		// color texture
-		// =========================
-		glGenTextures(1, &colorTex);
-		glBindTexture(GL_TEXTURE_2D, colorTex);
-
-		glTexImage2D(
-			GL_TEXTURE_2D,
-			0,
-			GL_RGBA16F,
-			width,
-			height,
-			0,
-			GL_RGBA,
-			GL_FLOAT,
-			nullptr
-		);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-		glFramebufferTexture2D(
-			GL_FRAMEBUFFER,
-			GL_COLOR_ATTACHMENT0,
-			GL_TEXTURE_2D,
-			colorTex,
-			0
-		);
-
-		// =========================
-		// depth texture
-		// =========================
-		glGenTextures(1, &depthTex);
-		glBindTexture(GL_TEXTURE_2D, depthTex);
-
-		glTexImage2D(
-			GL_TEXTURE_2D,
-			0,
-			GL_DEPTH_COMPONENT24,
-			width,
-			height,
-			0,
-			GL_DEPTH_COMPONENT,
-			GL_FLOAT,
-			nullptr
-		);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-
-		glFramebufferTexture2D(
-			GL_FRAMEBUFFER,
-			GL_DEPTH_ATTACHMENT,
-			GL_TEXTURE_2D,
-			depthTex,
-			0
-		);
-
-		GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
-		glDrawBuffers(1, bufs);
-
-		GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-		if (status != GL_FRAMEBUFFER_COMPLETE)
-		{
-			printf("DOF FBO incomplete: 0x%x\n", status);
-		}
-
-		glBindTexture(GL_TEXTURE_2D, 0);
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-		// ===== 2. fullscreen quad =====
-		float quad[] = {
-			-1, -1,  1, -1,  1,  1,
-			-1, -1,  1,  1, -1,  1
-		};
-
-		glGenVertexArrays(1, &quadVAO);
-		glGenBuffers(1, &quadVBO);
-
-		glBindVertexArray(quadVAO);
-		glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
-
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), 0);
-
-		// ===== 3. shader =====
-		const char* vs = R"(
-        #version 330 core
-        layout(location=0) in vec2 aPos;
-        out vec2 uv;
-        void main() {
-            uv = aPos * 0.5 + 0.5;
-            gl_Position = vec4(aPos,0,1);
-        }
-    )";
-
-		const char* fs = R"(
-#version 330 core
-
-in vec2 uv;
-out vec4 FragColor;
-
-uniform sampler2D uColor;
-uniform sampler2D uDepth;
-
-uniform float zNear;
-uniform float zFar;
-
-uniform float focalDistance;
-uniform float focusRange;
-uniform float maxBlurRadius;
-
-float LinearizeDepth(float depth)
-{
-    float z = depth * 2.0 - 1.0;
-
-    return (2.0 * zNear * zFar) /
-           (zFar + zNear - z * (zFar - zNear));
-}
-
-
-
-float GetBlurAmount(float linearDepth)
-{
-    float d = abs(linearDepth - focalDistance);
-
-    float b = d / max(focusRange, 0.0001);
-
-    // 比 clamp 更柔和，不会突然从清晰跳到模糊
-    b = smoothstep(0.0, 1.0, b);
-
-    return clamp(b, 0.0, 1.0);
-}
-
-vec3 BlurColor(vec2 uv, float radius)
-{
-    if (radius < 0.5)
-        return texture(uColor, uv).rgb;
-
-    vec2 texel = 1.0 / vec2(textureSize(uColor, 0));
-
-    float centerRawDepth = texture(uDepth, uv).r;
-    float centerDepth = LinearizeDepth(centerRawDepth);
-
-    vec3 sum = texture(uColor, uv).rgb;
-    float weightSum = 1.0;
-
-    // 近似圆形光圈采样，比十字采样自然很多
-    vec2 samples[24] = vec2[](
-        vec2( 0.000,  0.000),
-
-        vec2( 0.500,  0.000),
-        vec2(-0.500,  0.000),
-        vec2( 0.000,  0.500),
-        vec2( 0.000, -0.500),
-
-        vec2( 0.354,  0.354),
-        vec2(-0.354,  0.354),
-        vec2( 0.354, -0.354),
-        vec2(-0.354, -0.354),
-
-        vec2( 1.000,  0.000),
-        vec2(-1.000,  0.000),
-        vec2( 0.000,  1.000),
-        vec2( 0.000, -1.000),
-
-        vec2( 0.707,  0.707),
-        vec2(-0.707,  0.707),
-        vec2( 0.707, -0.707),
-        vec2(-0.707, -0.707),
-
-        vec2( 0.923,  0.382),
-        vec2(-0.923,  0.382),
-        vec2( 0.923, -0.382),
-        vec2(-0.923, -0.382),
-
-        vec2( 0.382,  0.923),
-        vec2(-0.382,  0.923),
-        vec2( 0.382, -0.923)
-    );
-
-    for (int i = 0; i < 24; i++)
-    {
-        vec2 suv = uv + samples[i] * texel * radius;
-
-        vec3 sampleColor = texture(uColor, suv).rgb;
-
-        float sampleRawDepth = texture(uDepth, suv).r;
-        float sampleDepth = LinearizeDepth(sampleRawDepth);
-
-        float sampleBlur = GetBlurAmount(sampleDepth);
-
-        // 深度保护：
-        // 深度差太大的像素少混合，避免山边缘、地平线出现糊成一团的假边
-        float depthDiff = abs(sampleDepth - centerDepth);
-
-// 更宽松的深度保护。
-// 不再把深度差大的采样直接压到 0，山边缘会跟着糊开。
-float depthProtect = 1.0 - smoothstep(
-    focusRange * 0.5,
-    focusRange * 8.0,
-    depthDiff
-);
-
-// 最低保留 35% 的跨深度采样权重。
-// 这个值越大，边缘越糊，但也越容易有 halo。
-float depthWeight = mix(0.35, 1.0, depthProtect);
-
-// 离焦区域本身采样权重更高
-float blurWeight = mix(0.5, 1.0, sampleBlur);
-
-float w = depthWeight * blurWeight;
-
-        sum += sampleColor * w;
-        weightSum += w;
-    }
-
-    return sum / max(weightSum, 0.0001);
-}
-
-void main()
-{
-    float rawDepth = texture(uDepth, uv).r;
-
-    float linearDepth = LinearizeDepth(rawDepth);
-
-    float blurAmount = GetBlurAmount(linearDepth);
-
-    vec3 sharp = texture(uColor, uv).rgb;
-    vec3 blurred = BlurColor(uv, blurAmount * maxBlurRadius);
-
-    // 再 smooth 一次，避免 blurAmount 线性混合太假
-    blurAmount = smoothstep(0.0, 1.0, blurAmount);
-
-    vec3 color = mix(sharp, blurred, blurAmount);
-
-    FragColor = vec4(color, 1.0);
-}
-)";
-		dofProgram = CreateShaderProgram(vs, fs);
-	}
-	void ApplyDepthOfField(GLuint outfbo)
-	{
-		glBindFramebuffer(GL_FRAMEBUFFER, outfbo);
-
-		glViewport(0, 0, gWidth, gHeight);
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(0, 0, gWidth, gHeight);
-
-		glDisable(GL_DEPTH_TEST);
-		glDepthMask(GL_FALSE);
-		glDisable(GL_BLEND);
-
-		glUseProgram(dofProgram);
-
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, colorTex);
-		glUniform1i(
-			glGetUniformLocation(dofProgram, "uColor"),
-			0
-		);
-
-		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, depthTex);
-		glUniform1i(
-			glGetUniformLocation(dofProgram, "uDepth"),
-			1
-		);
-
-		// 这两个必须和你的 projection 保持一致。
-		// 例如：
-		// glm::perspective(..., 0.1f, 2000.0f)
-		glUniform1f(
-			glGetUniformLocation(dofProgram, "zNear"),
-			0.1f
-		);
-
-		glUniform1f(
-			glGetUniformLocation(dofProgram, "zFar"),
-			10000.0f
-		);
-
-		glUniform1f(glGetUniformLocation(dofProgram, "focalDistance"), 120.0);
-		glUniform1f(glGetUniformLocation(dofProgram, "focusRange"), 300.0f);
-		glUniform1f(glGetUniformLocation(dofProgram, "maxBlurRadius"), 13.0f);
-
-		glBindVertexArray(quadVAO);
-		glDrawArrays(GL_TRIANGLES, 0, 6);
-		glBindVertexArray(0);
-
-		glDepthMask(GL_TRUE);
-	}
-
-private://terrain 
-	glm::mat4 model = glm::mat4(1.0f);
-
-	//高度图
-	GLint heightMapW = 512;
-	GLint heightMapH = 512;
-	std::vector<float> heightData;
-	GLuint heightTex = 0;
-	PerlinNoise2D terrainNoise{ 12345 };
-
-	//地形网格数据
-	int terrainIndexCount = 0;
-	GLuint terrainVAO = 0;
-	GLuint terrainVBO = 0;
-	GLuint terrainEBO = 0;
-	float terrainSize = 500.0;
-
-	float Clamp01(float x)
-	{
-		if (x < 0.0f) return 0.0f;
-		if (x > 1.0f) return 1.0f;
-		return x;
-	}
-
-	float SmoothStep(float edge0, float edge1, float x)
-	{
-		x = Clamp01((x - edge0) / (edge1 - edge0));
-		return x * x * (3.0f - 2.0f * x);
-	}
-	void InitHeightMap()//生成高度图
-	{
-		GLint w = heightMapW;
-		GLint h = heightMapH;
-		heightData.resize(w * h);
-
-		for (int z = 0; z < h; z++)
-		{
-			for (int x = 0; x < w; x++)
-			{
-				float u = (float)x / (float)(w - 1);
-				float v = (float)z / (float)(h - 1);
-
-				float px = (u - 0.5f) * terrainSize;
-				float pz = (v - 0.5f) * terrainSize;
-
-				float continent = terrainNoise.FBM(
-					px * 0.035f,
-					pz * 0.035f,
-					5,
-					2.0f,
-					0.5f
-				);
-
-				continent = continent * 0.5f + 0.5f;
-				continent = SmoothStep(0.25f, 0.85f, continent);
-
-				float mountainMask = SmoothStep(0.55f, 0.95f, continent);
-
-				float hills = terrainNoise.FBM(
-					px * 0.12f,
-					pz * 0.12f,
-					6,
-					2.0f,
-					0.48f
-				) * 2.0f;
-
-				float mountains = terrainNoise.Ridged(
-					px * 0.055f,
-					pz * 0.055f,
-					6,
-					2.1f,
-					0.5f
-				) * 12.0f * mountainMask;
-
-				float detail = terrainNoise.FBM(
-					px * 0.55f,
-					pz * 0.55f,
-					4,
-					2.0f,
-					0.45f
-				) * 0.35f;
-
-				float height = 0.0f;
-				height += continent * 2.0f;
-				height += hills;
-				height += mountains;
-				height += detail;
-				height -= 1.0f;
-
-				heightData[z * w + x] = height * 2.0;
-			}
-		}
-
-		glGenTextures(1, &heightTex);
-		glBindTexture(GL_TEXTURE_2D, heightTex);
-
-		glTexImage2D(
-			GL_TEXTURE_2D,
-			0,
-			GL_R32F,
-			w,
-			h,
-			0,
-			GL_RED,
-			GL_FLOAT,
-			heightData.data()
-		);
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
-	void UploadHeightMap()
-	{
-		glBindTexture(GL_TEXTURE_2D, heightTex);
-
-		glTexSubImage2D(
-			GL_TEXTURE_2D,
-			0,
-			0,
-			0,
-			heightMapW,
-			heightMapH,
-			GL_RED,
-			GL_FLOAT,
-			heightData.data()
-		);
-
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
-	void InitTerrain(float size, int cells)
-	{
-		struct TerrainVertex
-		{
-			glm::vec2 xz;
-			glm::vec2 uv;
-		};
-
-		std::vector<TerrainVertex> vertices;
-		std::vector<unsigned int> indices;
-
-		int rowVertexCount = cells + 1;
-
-		vertices.reserve(rowVertexCount * rowVertexCount);
-
-		// =========================
-		// 1. 生成平面顶点
-		// =========================
-		for (int z = 0; z <= cells; z++)
-		{
-			for (int x = 0; x <= cells; x++)
-			{
-				float u = (float)x / (float)cells;
-				float v = (float)z / (float)cells;
-
-				float px = (u - 0.5f) * size;
-				float pz = (v - 0.5f) * size;
-
-				TerrainVertex vert;
-				vert.xz = glm::vec2(px, pz);
-				vert.uv = glm::vec2(u, v);
-
-				vertices.push_back(vert);
-			}
-		}
-
-		// =========================
-		// 2. 用 GL_TRIANGLE_STRIP 串起来
-		// =========================
-		// 每两行组成一条 triangle strip。
-		// 行与行之间用 degenerate triangles 连接。
-		for (int z = 0; z < cells; z++)
-		{
-			if (z > 0)
-			{
-				// degenerate bridge
-				indices.push_back(z * rowVertexCount + cells);
-				indices.push_back(z * rowVertexCount + 0);
-			}
-
-			for (int x = 0; x <= cells; x++)
-			{
-				int i0 = z * rowVertexCount + x;
-				int i1 = (z + 1) * rowVertexCount + x;
-
-				indices.push_back(i0);
-				indices.push_back(i1);
-			}
-		}
-
-		terrainIndexCount = (int)indices.size();
-
-		// =========================
-		// 3. 创建 VAO / VBO / EBO
-		// =========================
-		glGenVertexArrays(1, &terrainVAO);
-		glGenBuffers(1, &terrainVBO);
-		glGenBuffers(1, &terrainEBO);
-
-		glBindVertexArray(terrainVAO);
-
-		glBindBuffer(GL_ARRAY_BUFFER, terrainVBO);
-		glBufferData(
-			GL_ARRAY_BUFFER,
-			vertices.size() * sizeof(TerrainVertex),
-			vertices.data(),
-			GL_STATIC_DRAW
-		);
-
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, terrainEBO);
-		glBufferData(
-			GL_ELEMENT_ARRAY_BUFFER,
-			indices.size() * sizeof(unsigned int),
-			indices.data(),
-			GL_STATIC_DRAW
-		);
-
-		// layout(location = 0) in vec2 aXZ;
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(
-			0,
-			2,
-			GL_FLOAT,
-			GL_FALSE,
-			sizeof(TerrainVertex),
-			(void*)offsetof(TerrainVertex, xz)
-		);
-
-		// layout(location = 1) in vec2 aUV;
-		glEnableVertexAttribArray(1);
-		glVertexAttribPointer(
-			1,
-			2,
-			GL_FLOAT,
-			GL_FALSE,
-			sizeof(TerrainVertex),
-			(void*)offsetof(TerrainVertex, uv)
-		);
-
-		glBindVertexArray(0);
-	}
-	void DrawTerrain()
-	{
-		glBindVertexArray(terrainVAO);
-
-		glDrawElements(
-			GL_TRIANGLE_STRIP,
-			terrainIndexCount,
-			GL_UNSIGNED_INT,
-			0
-		);
-
-		glBindVertexArray(0);
-	}
 private://camera setting
 	glm::vec3 cameraPos = glm::vec3(-10.0f, 20.0f, 0.0f);
 	glm::vec3 cameraTarget = glm::vec3(0.0f, 20.0f, 0.0f);
@@ -882,13 +18,6 @@ private://camera setting
 		cameraTarget,  // 看向原点
 		cameraUp  // “上方向”
 	);
-	glm::mat4 projection = glm::perspective(
-		glm::radians(45.0f),
-		800.0f / 600.0f,
-		0.1f,
-		10000.0f
-	);
-public://处理camera操作逻辑
 
 	bool middleMouseDown = false;
 	bool shiftDown = false;
@@ -903,14 +32,16 @@ public://处理camera操作逻辑
 	float minZoomDistance = 1.0f;       // 离 target 最近距离
 	float maxZoomDistance = 2000.0f;    // 离 target 最远距离
 
-	void UpdateCameraView()
+	glm::mat4 UpdateCameraView()
 	{
 		view = glm::lookAt(
 			cameraPos,
 			cameraTarget,
 			cameraUp
 		);
+		return view;
 	}
+protected:
 
 	void OnMouse(const Enola2::MouseEvent& e) override
 	{
@@ -1063,115 +194,734 @@ public://处理camera操作逻辑
 				shiftDown = false;
 		}
 	}
-
-
-private://time
-	float t = 0.0;
-public:
-
-	void Init() override
+public://处理camera操作逻辑
+	ViewController()
 	{
 		Enola2::EventListener::Register(this);
-		terrainShader = CreateShaderProgram(terrainVertex, terrainFragment);
-		InitTerrain(terrainSize, 512);
-		InitHeightMap();
-		DOF_Init(GetBounds().w, GetBounds().h);
+	}
+	void SetCamera(glm::vec3 pos, glm::vec3 target, glm::vec3 up)
+	{
+		cameraPos = pos;
+		cameraTarget = target;
+		cameraUp = up;
+		UpdateCameraView();
+	}
+	glm::mat4 GetNowView()
+	{
+		//UpdateCameraView();
+		return view;
+	}
+	glm::vec3 GetNowCameraPos()
+	{
+		//UpdateCameraView();
+		return cameraPos;
+	}
+};
+
+
+class ImageLoader
+{
+public:
+	GLuint LoadTexture2D(const std::string& path, bool flipY = true)
+	{
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+
+		stbi_set_flip_vertically_on_load(flipY);
+
+		unsigned char* data = stbi_load(
+			path.c_str(),
+			&width,
+			&height,
+			&channels,
+			0
+		);
+
+		if (!data)
+		{
+			printf("Image load failed: %s\n", path.c_str());
+			return 0;
+		}
+
+		GLenum format = GL_RGB;
+
+		if (channels == 1)
+			format = GL_RED;
+		else if (channels == 3)
+			format = GL_RGB;
+		else if (channels == 4)
+			format = GL_RGBA;
+
+		GLuint texture = 0;
+		glGenTextures(1, &texture);
+		glBindTexture(GL_TEXTURE_2D, texture);
+
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+		glTexImage2D(
+			GL_TEXTURE_2D,
+			0,
+			format,
+			width,
+			height,
+			0,
+			format,
+			GL_UNSIGNED_BYTE,
+			data
+		);
+
+		glGenerateMipmap(GL_TEXTURE_2D);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		stbi_image_free(data);
+
+		return texture;
+	}
+};
+
+class ObjLoader
+{
+private:
+	struct MtlGroup
+	{
+		std::string newmtl;//newmtl xxx
+		float ns;//Ns 
+		glm::vec3 ka;//Ka
+		glm::vec3 kd;//Kd
+		glm::vec3 ks;//Ks
+		glm::vec3 ke;//Ke
+		float ni;//Ni
+		float d;//d
+		int illum;//illum
+
+		std::string mapKd;//贴图文件
+		GLuint diffuseTexture = 0;
+		bool hasDiffuseTexture = false;
+	};
+	std::unordered_map<std::string, MtlGroup> bucketMtl;
+	std::vector<glm::vec3> bucketV;
+	std::vector<glm::vec3> bucketVn;
+	std::vector<glm::vec2> bucketVt;
+	struct FaceGroup
+	{
+		std::string usemtl;//usemtl
+		struct FaceIndex
+		{
+			//f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
+			int v1, v2, v3;
+			int vt1, vt2, vt3;
+			int vn1, vn2, vn3;
+		};
+		std::vector<FaceIndex> faces;
+	};
+	std::vector<FaceGroup> bucketFace;
+
+
+private://VAO/VBO
+	struct Vertex
+	{
+		glm::vec3 pos;
+		glm::vec3 normal;
+		glm::vec2 uv;
+	};
+	struct RenderGroup
+	{
+		std::string usemtl;
+		unsigned int firstVertex;
+		unsigned int vertexCount;
+	};
+	std::vector<Vertex> vertices;
+	std::vector<RenderGroup> renderGroups;
+
+public:
+	void LoadObj(std::string objPath, std::string mtlPath)
+	{
+		bucketMtl.clear();
+		bucketV.clear();
+		bucketVn.clear();
+		bucketVt.clear();
+		bucketFace.clear();
+		bucketV.push_back({ 0,0,0 });//这样index从1开始
+		bucketVn.push_back({ 0,0,0 });
+		bucketVt.push_back({ 0,0 });
+
+		auto GetDirectory = [](const std::string& path) -> std::string
+			{
+				size_t p1 = path.find_last_of('/');
+				size_t p2 = path.find_last_of('\\');
+
+				size_t p = std::string::npos;
+
+				if (p1 != std::string::npos && p2 != std::string::npos)
+				{
+					if (p1 > p2)
+						p = p1;
+					else
+						p = p2;
+				}
+				else if (p1 != std::string::npos)
+					p = p1;
+				else
+					p = p2;
+
+				if (p == std::string::npos)
+					return "";
+
+				return path.substr(0, p + 1);
+			};
+
+		std::string mtlDir = GetDirectory(mtlPath);
+		ImageLoader imageLoader;
+
+		// --------------------
+		// Load MTL
+		// --------------------
+		{
+			std::ifstream file(mtlPath);
+			if (file.is_open())
+			{
+				std::string line;
+				MtlGroup* currentMtl = nullptr;
+
+				while (std::getline(file, line))
+				{
+					if (line.empty())
+						continue;
+
+					std::stringstream ss(line);
+					std::string tag;
+					ss >> tag;
+
+					if (tag.empty())
+						continue;
+
+					// 注释行
+					if (tag[0] == '#')
+						continue;
+
+					if (tag == "newmtl")
+					{
+						MtlGroup mtl{};
+
+						mtl.ns = 0.0f;
+						mtl.ka = glm::vec3(1.0f);
+						mtl.kd = glm::vec3(1.0f);
+						mtl.ks = glm::vec3(0.0f);
+						mtl.ke = glm::vec3(0.0f);
+						mtl.ni = 1.0f;
+						mtl.d = 1.0f;
+						mtl.illum = 2;
+						mtl.mapKd = "";
+						mtl.diffuseTexture = 0;
+						mtl.hasDiffuseTexture = false;
+
+						ss >> mtl.newmtl;
+
+						bucketMtl[mtl.newmtl] = mtl;
+						currentMtl = &bucketMtl[mtl.newmtl];
+					}
+					else if (currentMtl != nullptr)
+					{
+						if (tag == "Ns")
+						{
+							ss >> currentMtl->ns;
+						}
+						else if (tag == "Ka")
+						{
+							ss >> currentMtl->ka.x >> currentMtl->ka.y >> currentMtl->ka.z;
+						}
+						else if (tag == "Kd")
+						{
+							ss >> currentMtl->kd.x >> currentMtl->kd.y >> currentMtl->kd.z;
+						}
+						else if (tag == "Ks")
+						{
+							ss >> currentMtl->ks.x >> currentMtl->ks.y >> currentMtl->ks.z;
+						}
+						else if (tag == "Ke")
+						{
+							ss >> currentMtl->ke.x >> currentMtl->ke.y >> currentMtl->ke.z;
+						}
+						else if (tag == "Ni")
+						{
+							ss >> currentMtl->ni;
+						}
+						else if (tag == "d")
+						{
+							ss >> currentMtl->d;
+						}
+						else if (tag == "illum")
+						{
+							ss >> currentMtl->illum;
+						}
+						else if (tag == "map_Kd")//顺便读取图像数据
+						{
+							ss >> currentMtl->mapKd;
+
+							std::string texturePath = mtlDir + currentMtl->mapKd;
+							printf("mtl %s -> %s\n", currentMtl->newmtl.c_str(), texturePath.c_str());
+							currentMtl->diffuseTexture = imageLoader.LoadTexture2D(texturePath);
+
+							if (currentMtl->diffuseTexture != 0)
+							{
+								currentMtl->hasDiffuseTexture = true;
+							}
+							else
+							{
+								currentMtl->hasDiffuseTexture = false;
+								printf("Failed to load map_Kd texture: %s\n", texturePath.c_str());
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// --------------------
+		// Load OBJ
+		// --------------------
+		{
+			std::ifstream file(objPath);
+			if (!file.is_open())
+				return;
+
+			std::string line;
+			FaceGroup* currentFaceGroup = nullptr;
+
+			while (std::getline(file, line))
+			{
+				if (line.empty())
+					continue;
+
+				std::stringstream ss(line);
+				std::string tag;
+				ss >> tag;
+
+				if (tag == "v")
+				{
+					glm::vec3 v{};
+					ss >> v.x >> v.y >> v.z;
+					bucketV.push_back(v);
+				}
+				else if (tag == "vn")
+				{
+					glm::vec3 vn{};
+					ss >> vn.x >> vn.y >> vn.z;
+					bucketVn.push_back(vn);
+				}
+				else if (tag == "vt")
+				{
+					glm::vec2 vt{};
+					ss >> vt.x >> vt.y;
+					bucketVt.push_back(vt);
+				}
+				else if (tag == "usemtl")
+				{
+					std::string usemtl;
+					ss >> usemtl;
+
+					bucketFace.push_back(FaceGroup{});
+					bucketFace.back().usemtl = usemtl;
+					currentFaceGroup = &bucketFace.back();
+				}
+				else if (tag == "f")
+				{
+					if (currentFaceGroup == nullptr)
+					{
+						bucketFace.push_back(FaceGroup{});
+						currentFaceGroup = &bucketFace.back();
+					}
+
+					FaceGroup::FaceIndex face{};
+					char slash;
+
+					ss >> face.v1 >> slash >> face.vt1 >> slash >> face.vn1;
+					ss >> face.v2 >> slash >> face.vt2 >> slash >> face.vn2;
+					ss >> face.v3 >> slash >> face.vt3 >> slash >> face.vn3;
+
+					currentFaceGroup->faces.push_back(face);
+				}
+			}
+		}
 	}
 
-	glm::vec3 skyColor = { 0.5f, 0.8f, 0.8f };
-
-	void Render(GLuint fbo) override//一定要画在这个fbo里
+	GLuint vao = 0, vbo = 0;
+	void CreateVAOVBO()
 	{
-		glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);//先绘制到fx的fbo
+		if (vao != 0)
+			glDeleteVertexArrays(1, &vao);
+		if (vbo != 0)
+			glDeleteBuffers(1, &vbo);
+		vertices.clear();
+		renderGroups.clear();
 
+		for (const auto& group : bucketFace)
+		{
+			RenderGroup renderGroup{};
+			renderGroup.usemtl = group.usemtl;
+			renderGroup.firstVertex = static_cast<unsigned int>(vertices.size());
 
+			for (const auto& face : group.faces)
+			{
+				Vertex v1{};
+				v1.pos = bucketV[face.v1];
+				v1.normal = bucketVn[face.vn1];
+				v1.uv = glm::vec2(bucketVt[face.vt1].x, bucketVt[face.vt1].y);
 
-		glViewport(0, 0, gWidth, gHeight);
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(0, 0, gWidth, gHeight);
+				Vertex v2{};
+				v2.pos = bucketV[face.v2];
+				v2.normal = bucketVn[face.vn2];
+				v2.uv = glm::vec2(bucketVt[face.vt2].x, bucketVt[face.vt2].y);
 
-		glEnable(GL_DEPTH_TEST);
-		glDepthFunc(GL_LESS);
-		glDepthMask(GL_TRUE);
+				Vertex v3{};
+				v3.pos = bucketV[face.v3];
+				v3.normal = bucketVn[face.vn3];
+				v3.uv = glm::vec2(bucketVt[face.vt3].x, bucketVt[face.vt3].y);
 
-		glClearDepth(1.0f);
-		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+				vertices.push_back(v1);
+				vertices.push_back(v2);
+				vertices.push_back(v3);
+			}
 
+			renderGroup.vertexCount =
+				static_cast<unsigned int>(vertices.size()) - renderGroup.firstVertex;
 
+			renderGroups.push_back(renderGroup);
+		}
 
-		glEnable(GL_DEPTH_TEST);
-		glClearColor(skyColor.x, skyColor.y, skyColor.z, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glGenVertexArrays(1, &vao);
+		glGenBuffers(1, &vbo);
 
-		glUseProgram(terrainShader);
+		glBindVertexArray(vao);
 
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, heightTex);
-		glUniform1i(glGetUniformLocation(terrainShader, "heightMap"), 0);
-
-		glUniform1f(
-			glGetUniformLocation(terrainShader, "terrainSize"),
-			terrainSize
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(
+			GL_ARRAY_BUFFER,
+			vertices.size() * sizeof(Vertex),
+			vertices.data(),
+			GL_STATIC_DRAW
 		);
 
-		glUniform3f(
-			glGetUniformLocation(terrainShader, "skyColor"),
-			skyColor.x,
-			skyColor.y,
-			skyColor.z
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(
+			0,
+			3,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(Vertex),
+			(void*)offsetof(Vertex, pos)
 		);
+
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(
+			1,
+			3,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(Vertex),
+			(void*)offsetof(Vertex, normal)
+		);
+
+		glEnableVertexAttribArray(2);
+		glVertexAttribPointer(
+			2,
+			2,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(Vertex),
+			(void*)offsetof(Vertex, uv)
+		);
+
+		glBindVertexArray(0);
+	}
+
+	void Draw(GLuint shaderProgram,
+		const glm::mat4& model,
+		const glm::mat4& view,
+		const glm::mat4& projection,
+		const glm::vec3& cameraPos)
+	{
+		glUseProgram(shaderProgram);
+
+		//test
+		/*glUniform3f(
+			glGetUniformLocation(shaderProgram, "uLightDir"),
+			-0.3f, -1.0f, -0.5f
+		);*/
 
 		glUniformMatrix4fv(
-			glGetUniformLocation(terrainShader, "model"),
+			glGetUniformLocation(shaderProgram, "uModel"),
 			1,
 			GL_FALSE,
 			glm::value_ptr(model)
 		);
 
 		glUniformMatrix4fv(
-			glGetUniformLocation(terrainShader, "view"),
+			glGetUniformLocation(shaderProgram, "uView"),
 			1,
 			GL_FALSE,
 			glm::value_ptr(view)
 		);
 
 		glUniformMatrix4fv(
-			glGetUniformLocation(terrainShader, "projection"),
+			glGetUniformLocation(shaderProgram, "uProjection"),
 			1,
 			GL_FALSE,
 			glm::value_ptr(projection)
 		);
 
-		glUniform1f(
-			glGetUniformLocation(terrainShader, "time"),
-			t
+		glUniform3fv(
+			glGetUniformLocation(shaderProgram, "uViewPos"),
+			1,
+			glm::value_ptr(cameraPos)
 		);
 
-		glUniform3f(
-			glGetUniformLocation(terrainShader, "cameraPos"),
-			cameraPos.x,
-			cameraPos.y,
-			cameraPos.z
-		);
+		glBindVertexArray(vao);
 
-		DrawTerrain();
+		for (const auto& group : renderGroups)
+		{
+			const MtlGroup& mtl = bucketMtl[group.usemtl];
 
-		ApplyDepthOfField(fbo);
+			glUniform3fv(
+				glGetUniformLocation(shaderProgram, "uKd"),
+				1,
+				glm::value_ptr(mtl.kd)
+			);
 
+			glUniform1f(
+				glGetUniformLocation(shaderProgram, "uD"),
+				mtl.d
+			);
+
+			if (mtl.hasDiffuseTexture)
+			{
+				glActiveTexture(GL_TEXTURE0);
+				glBindTexture(GL_TEXTURE_2D, mtl.diffuseTexture);
+
+				glUniform1i(
+					glGetUniformLocation(shaderProgram, "uDiffuseMap"),
+					0
+				);
+
+				glUniform1i(
+					glGetUniformLocation(shaderProgram, "uHasDiffuseTexture"),
+					1
+				);
+			}
+			else
+			{
+				glActiveTexture(GL_TEXTURE0);
+				glBindTexture(GL_TEXTURE_2D, 0);
+
+				glUniform1i(
+					glGetUniformLocation(shaderProgram, "uHasDiffuseTexture"),
+					0
+				);
+			}
+
+			glDrawArrays(
+				GL_TRIANGLES,
+				group.firstVertex,
+				group.vertexCount
+			);
+		}
+
+		glBindVertexArray(0);
+	}
+};
+
+class ShaderCompiler
+{
+private:
+public:
+	GLuint CompileShaderGLSL(const char* vertex, const char* fragment)
+	{
+		GLint success = 0;
+		GLchar infoLog[1024];
+
+		// --------------------
+		// Compile vertex shader
+		// --------------------
+		GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+		glShaderSource(vertexShader, 1, &vertex, nullptr);
+		glCompileShader(vertexShader);
+
+		glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+		if (!success)
+		{
+			glGetShaderInfoLog(vertexShader, 1024, nullptr, infoLog);
+			std::cout << "Vertex Shader Compile Error:\n" << infoLog << std::endl;
+
+			glDeleteShader(vertexShader);
+			return 0;
+		}
+
+		// --------------------
+		// Compile fragment shader
+		// --------------------
+		GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+		glShaderSource(fragmentShader, 1, &fragment, nullptr);
+		glCompileShader(fragmentShader);
+
+		glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+		if (!success)
+		{
+			glGetShaderInfoLog(fragmentShader, 1024, nullptr, infoLog);
+			std::cout << "Fragment Shader Compile Error:\n" << infoLog << std::endl;
+
+			glDeleteShader(vertexShader);
+			glDeleteShader(fragmentShader);
+			return 0;
+		}
+
+		// --------------------
+		// Link shader program
+		// --------------------
+		GLuint program = glCreateProgram();
+
+		glAttachShader(program, vertexShader);
+		glAttachShader(program, fragmentShader);
+		glLinkProgram(program);
+
+		glGetProgramiv(program, GL_LINK_STATUS, &success);
+		if (!success)
+		{
+			glGetProgramInfoLog(program, 1024, nullptr, infoLog);
+			std::cout << "Shader Program Link Error:\n" << infoLog << std::endl;
+
+			glDeleteShader(vertexShader);
+			glDeleteShader(fragmentShader);
+			glDeleteProgram(program);
+			return 0;
+		}
+
+		// Program 链接完成后，shader object 可以删除
+		glDeleteShader(vertexShader);
+		glDeleteShader(fragmentShader);
+
+		return program;
+	}
+};
+
+class Model :public Enola2::Component
+{
+private://shader
+	const char* vertexSL = R"(
+#version 330 core
+
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+
+out vec3 vWorldPos;
+out vec3 vNormal;
+out vec2 vUV;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+void main()
+{
+    vec4 worldPos = uModel * vec4(aPos, 1.0);
+
+    vWorldPos = worldPos.xyz;
+    vNormal = mat3(transpose(inverse(uModel))) * aNormal;
+    vUV = aUV;
+
+    gl_Position = uProjection * uView * worldPos;
+}
+)";
+	const char* fragmentSL = R"(
+#version 330 core
+
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec2 vUV;
+
+out vec4 FragColor;
+
+uniform vec3 uKd;
+uniform float uD;
+
+uniform sampler2D uDiffuseMap;
+uniform int uHasDiffuseTexture;
+
+void main()
+{
+    vec4 baseColor = vec4(uKd, uD);
+
+    if (uHasDiffuseTexture == 1)
+    {
+        baseColor *= texture(uDiffuseMap, vUV);
+    }
+
+    FragColor = baseColor;
+}
+)";
+
+private:
+	ViewController viewCtrl;
+	ShaderCompiler shader;
+	GLuint shaderProgram = 0;
+	ObjLoader objloader;
+	glm::mat4 model{ 1 };
+
+	float fov = 45.0;
+	glm::mat4 projection = glm::perspective(
+		glm::radians(fov),
+		800.0f / 600.0f,
+		0.1f,
+		10000.0f
+	);
+public:
+	void Init() override
+	{
+		objloader.LoadObj("D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora2.obj", "D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora2.mtl");
+		objloader.CreateVAOVBO();
+		shaderProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
+		viewCtrl.SetCamera(
+			glm::vec3(-2.0f, 0.0f, 0.0f),//相机位置
+			glm::vec3(0.0f, 0.0f, 0.0f),//朝向世界坐标
+			glm::vec3(0.0f, 1.0f, 0.0f));//上方向
+	}
+	void Render(GLuint fbo) override
+	{
+		glm::mat4 view = viewCtrl.GetNowView();
+		glm::vec3 cameraPos = viewCtrl.GetNowCameraPos();
+
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);//在render提供的fbo上画
+		glEnable(GL_DEPTH_TEST);
+		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+		objloader.Draw(shaderProgram, model, view, projection, cameraPos);
 	}
 	void Resize() override
 	{
 		auto bounds = GetBounds();
-		printf("Root Bounds:%d %d %d %d\n", (int)bounds.x, (int)bounds.y, (int)bounds.w, (int)bounds.h);
-
+		float aspect = bounds.w / bounds.h;
+		projection = glm::perspective(
+			glm::radians(fov),
+			aspect,
+			0.1f,
+			10000.0f
+		);
 	}
 };
 
 class MyRootComponent :public Enola2::Component, public Enola2::EventListener
 {
 private:
-	World v3d;
+	Model v3d;
 public:
 	MyRootComponent()
 	{
@@ -1189,6 +939,6 @@ public:
 	{
 		auto bounds = GetBounds();
 		printf("Root Bounds:%d %d %d %d\n", (int)bounds.x, (int)bounds.y, (int)bounds.w, (int)bounds.h);
-		v3d.SetBounds({ 0,0,bounds.w,bounds.h });
+		v3d.SetBounds({ 0,64,bounds.w,bounds.h - 128 });
 	}
 };

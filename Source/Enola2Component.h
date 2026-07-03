@@ -7,7 +7,7 @@
 #include <sstream>
 #include <iostream>
 
-#include "External/glad/include/glad/glad.h"
+#include "GLLoader.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"
@@ -18,7 +18,7 @@ namespace Enola2
 	{
 		float x, y, w, h;
 	};
-	
+
 	class RenderContext
 	{
 	private:
@@ -264,9 +264,9 @@ namespace Enola2
 	public://这些由外部友元，或者根组件(平台兼容层)管理
 		void DoRender()
 		{
-            auto frameBuffer = RenderContext2::StartRender({ directX, directY, bounds.w, bounds.h });
+			auto frameBuffer = RenderContext2::StartRender({ directX, directY, bounds.w, bounds.h });
 			Render(frameBuffer);//绘制自己的
-            RenderContext2::EndRender();
+			RenderContext2::EndRender();
 			for (auto* c : children)c->DoRender();//绘制子组件
 		}
 		void DoResize()
