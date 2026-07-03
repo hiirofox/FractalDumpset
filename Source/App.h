@@ -287,6 +287,7 @@ public:
 	}
 };
 
+
 class ObjLoader
 {
 private:
@@ -738,6 +739,7 @@ public:
 	}
 };
 
+
 class ShaderCompiler
 {
 private:
@@ -811,9 +813,172 @@ public:
 	}
 };
 
+
+class GridObj
+{
+private:
+
+	GLuint gridVAO = 0;
+	GLuint gridVBO = 0;
+	int gridLineCount = 0;
+	
+public:
+	void InitGrid(float halfSize = 10.0f, int lines = 200)
+	{
+		std::vector<glm::vec3> vertices;
+		std::vector<unsigned int> indices;
+
+		float step = (halfSize * 2.0f) / lines;
+
+		// 1. 生成“交叉点顶点”
+		for (int z = 0; z <= lines; z++)
+		{
+			for (int x = 0; x <= lines; x++)
+			{
+				float px = -halfSize + x * step;
+				float pz = -halfSize + z * step;
+
+				vertices.push_back(glm::vec3(px, 0.0f, pz));
+			}
+		}
+
+		// 2. 生成横向线索引
+		for (int z = 0; z <= lines; z++)
+		{
+			for (int x = 0; x < lines; x++)
+			{
+				int i0 = z * (lines + 1) + x;
+				int i1 = i0 + 1;
+
+				indices.push_back(i0);
+				indices.push_back(i1);
+			}
+		}
+
+		// 3. 生成纵向线索引
+		for (int z = 0; z < lines; z++)
+		{
+			for (int x = 0; x <= lines; x++)
+			{
+				int i0 = z * (lines + 1) + x;
+				int i1 = i0 + (lines + 1);
+
+				indices.push_back(i0);
+				indices.push_back(i1);
+			}
+		}
+
+		gridLineCount = (int)indices.size();
+
+		GLuint EBO;
+
+		glGenVertexArrays(1, &gridVAO);
+		glGenBuffers(1, &gridVBO);
+		glGenBuffers(1, &EBO);
+
+		glBindVertexArray(gridVAO);
+
+		// vertex buffer
+		glBindBuffer(GL_ARRAY_BUFFER, gridVBO);
+		glBufferData(GL_ARRAY_BUFFER,
+			vertices.size() * sizeof(glm::vec3),
+			vertices.data(),
+			GL_STATIC_DRAW);
+
+		// index buffer
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+			indices.size() * sizeof(unsigned int),
+			indices.data(),
+			GL_STATIC_DRAW);
+
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+
+		glBindVertexArray(0);
+	}
+	void Draw(GLuint shaderProgram,
+		const glm::mat4& model,
+		const glm::mat4& view,
+		const glm::mat4& projection,
+		const glm::vec3& cameraPos)
+	{
+
+		glUseProgram(shaderProgram);
+
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"),
+			1, GL_FALSE, glm::value_ptr(model));
+
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"),
+			1, GL_FALSE, glm::value_ptr(view));
+
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"),
+			1, GL_FALSE, glm::value_ptr(projection));
+
+		glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"),
+			1, glm::value_ptr(cameraPos));
+
+		glBindVertexArray(gridVAO);
+		glDrawElements(GL_LINES, gridLineCount, GL_UNSIGNED_INT, 0);
+		glBindVertexArray(0);
+	}
+
+};
+
 class Model :public Enola2::Component
 {
 private://shader
+	const char* gridVertexSL = R"(
+#version 330 core
+
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+out vec3 WorldPos;
+
+void main()
+{
+    vec4 world = model * vec4(aPos, 1.0);
+    WorldPos = world.xyz;
+
+    gl_Position = projection * view * world;
+}
+)";
+	const char* gridFragmentSL = R"(
+#version 330 core
+
+in vec3 WorldPos;
+
+uniform vec3 cameraPos;
+
+out vec4 FragColor;
+
+void main()
+{
+    vec3 gridColor = vec3(0.32, 0.32, 0.32);
+    vec3 xAxisColor = vec3(0.85, 0.20, 0.20);
+    vec3 zAxisColor = vec3(0.20, 0.45, 0.95);
+
+    float axisWidth = 0.001;
+
+    vec3 color = gridColor;
+
+    if (abs(WorldPos.z) < axisWidth)
+        color = xAxisColor;
+
+    if (abs(WorldPos.x) < axisWidth)
+        color = zAxisColor;
+
+    float dist = distance(cameraPos.xz, WorldPos.xz);
+    float fade = 1.0 - smoothstep(6.0, 18.0, dist);
+
+    FragColor = vec4(color, fade);
+}
+)";
+
 	const char* vertexSL = R"(
 #version 330 core
 
@@ -871,7 +1036,9 @@ void main()
 private:
 	ViewController viewCtrl;
 	ShaderCompiler shader;
-	GLuint shaderProgram = 0;
+	GLuint gridProgram = 0;
+	GLuint modelProgram = 0;
+	GridObj grid;
 	ObjLoader objloader;
 	glm::mat4 model{ 1 };
 
@@ -885,9 +1052,13 @@ private:
 public:
 	void Init() override
 	{
-		objloader.LoadObj("D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora2.obj", "D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora2.mtl");
+		grid.InitGrid(10, 200);
+
+		objloader.LoadObj("D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora.obj", "D:/Projects/c++/FractalDumpset/Resources/zeraora/zeraora.mtl");
 		objloader.CreateVAOVBO();
-		shaderProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
+		
+		gridProgram = shader.CompileShaderGLSL(gridVertexSL, gridFragmentSL);
+		modelProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
 		viewCtrl.SetCamera(
 			glm::vec3(-2.0f, 0.0f, 0.0f),//相机位置
 			glm::vec3(0.0f, 0.0f, 0.0f),//朝向世界坐标
@@ -903,7 +1074,8 @@ public:
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		objloader.Draw(shaderProgram, model, view, projection, cameraPos);
+		grid.Draw(gridProgram, model, view, projection, cameraPos);
+		objloader.Draw(modelProgram, model, view, projection, cameraPos);
 	}
 	void Resize() override
 	{
