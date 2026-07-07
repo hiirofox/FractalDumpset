@@ -1,13 +1,17 @@
 ﻿#pragma once
 
-#include "../Resources_Resources.rsh"
 #include <windows.h>
+
+#undef USE_PACK_RESOURCES
+#ifdef USE_PACK_RESOURCES
+#include "../Resources_Resources.rsh"
+#endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#include "Test3DObj.h"
-#include "TestTerrain.h"
+//#include "Test3DObj.h"
+//#include "TestTerrain.h"
 
 class ViewController :public Enola2::EventListener
 {
@@ -290,7 +294,30 @@ public:
 };
 
 
-class ObjLoader
+class Model
+{
+private:
+public:
+	//gl初始化之后执行
+	virtual void Init() {}
+
+	//绘制模型
+	virtual void Draw(GLuint shaderProgram,//着色器程序
+		const glm::mat4& view,//视图
+		const glm::mat4& projection,//投影
+		const glm::vec3& cameraPos) {//相机坐标
+	}
+
+	//模型摆放相关
+	virtual void ResetModel() {}
+	virtual void SetModel(glm::mat4 m) {}
+	virtual void SetModelPos(glm::vec3 p) {}
+	virtual void TranslateModel(glm::vec3 t) {}
+	virtual void ScaleModel(float k) {}
+	virtual void RotateModel(glm::vec3 r) {}
+};
+
+class ObjModel :public Model
 {
 private:
 	struct MtlGroup
@@ -327,8 +354,7 @@ private:
 	};
 	std::vector<FaceGroup> bucketFace;
 
-
-private://VAO/VBO
+	//VAO/VBO
 	struct Vertex
 	{
 		glm::vec3 pos;
@@ -645,12 +671,44 @@ public:
 
 		glBindVertexArray(0);
 	}
+	void Init() override
+	{
+		CreateVAOVBO();
+	}
+
+	glm::mat4 model = { 1.0 };
+	void ResetModel() override
+	{
+		model = { 1.0 };
+	}
+	void SetModel(glm::mat4 m) override
+	{
+		model = m;
+	}
+	void SetModelPos(glm::vec3 p) override
+	{
+		model[3] = glm::vec4(p, 1.0f);
+	}
+	void TranslateModel(glm::vec3 t) override
+	{
+		model = glm::translate(model, t);
+	}
+	void ScaleModel(float k) override
+	{
+		model = glm::scale(model, glm::vec3(k));
+	}
+	void RotateModel(glm::vec3 r) override
+	{
+		r = glm::radians(r);
+		model = glm::rotate(model, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
+		model = glm::rotate(model, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
+		model = glm::rotate(model, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
+	}
 
 	void Draw(GLuint shaderProgram,
-		const glm::mat4& model,
 		const glm::mat4& view,
 		const glm::mat4& projection,
-		const glm::vec3& cameraPos)
+		const glm::vec3& cameraPos) override
 	{
 		glUseProgram(shaderProgram);
 
@@ -927,7 +985,7 @@ public:
 
 };
 
-class Model :public Enola2::Component
+class TestObjModel :public Enola2::Component
 {
 private://shader
 	const char* gridVertexSL = R"(
@@ -1041,7 +1099,7 @@ private:
 	GLuint gridProgram = 0;
 	GLuint modelProgram = 0;
 	GridObj grid;
-	ObjLoader objloader;
+	ObjModel objloader;
 	glm::mat4 model{ 1 };
 
 	float fov = 45.0;
@@ -1055,7 +1113,7 @@ public:
 	std::string rspath = "D:/Projects/c++/FractalDumpset/Resources/";
 	void SetResourcesPath(std::string rspath)
 	{
-		this->rspath = rspath+"/";
+		this->rspath = rspath + "/";
 		printf("rspath:%s\n", rspath.c_str());
 	}
 	void Init() override
@@ -1072,6 +1130,7 @@ public:
 			glm::vec3(0.0f, 0.0f, 0.0f),//朝向世界坐标
 			glm::vec3(0.0f, 1.0f, 0.0f));//上方向
 	}
+	float t = 0.0;
 	void Render(GLuint fbo) override
 	{
 		glm::mat4 view = viewCtrl.GetNowView();
@@ -1082,8 +1141,13 @@ public:
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		grid.Draw(gridProgram, model, view, projection, cameraPos);
-		objloader.Draw(modelProgram, model, view, projection, cameraPos);
+		objloader.ResetModel();
+		objloader.RotateModel({ 0.0,t * 360.0,0.0 });
+		t += 0.001;
+		t -= (int)t;
+
+		grid.Draw(gridProgram, { 1 }, view, projection, cameraPos);
+		objloader.Draw(modelProgram, view, projection, cameraPos);
 	}
 	void Resize() override
 	{
@@ -1098,21 +1162,36 @@ public:
 	}
 };
 
+class Scene
+{
+private:
+
+public:
+};
+
 class MyRootComponent :public Enola2::Component, public Enola2::EventListener
 {
 private:
+
+#ifdef USE_PACK_RESOURCES
 	std::string rspath = "";
-	Model v3d;
+#endif 
+
+	TestObjModel v3d;
 public:
 	MyRootComponent()
 	{
 		AddChild(v3d);
+#ifdef USE_PACK_RESOURCES
 		rspath = Resources::UnpackResources();
 		v3d.SetResourcesPath(rspath);
+#endif
 	}
 	~MyRootComponent()
 	{
+#ifdef USE_PACK_RESOURCES
 		Resources::ClearTmpResources(rspath);
+#endif
 	}
 	void Init() override
 	{
