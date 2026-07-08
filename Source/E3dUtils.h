@@ -8,6 +8,21 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+namespace E3dUtils
+{
+	char logBuffer[65536];
+	void LogPrintf(const char* fmt, ...)
+	{
+#ifdef DEBUG
+		va_list ap;
+		va_start(ap, fmt);
+		vsnprintf(buf, sizeof(buf), fmt, ap);
+		va_end(ap);
+		fputs(buf, stderr);
+#endif
+	}
+}
+
 //用于读取图像数据的类
 class ImageLoader
 {

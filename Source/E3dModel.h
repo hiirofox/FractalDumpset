@@ -1,5 +1,7 @@
 #pragma once
 
+#include <numeric>
+
 #include "GLLoader.h"
 #include "External/glm/glm/glm.hpp"
 #include "External/glm/glm/gtc/type_ptr.hpp"
@@ -9,24 +11,26 @@
 
 class Model
 {
-private:
 public:
 	//gl初始化之后执行
 	virtual void Init() {}
 
 	//绘制模型
 	virtual void Draw(GLuint shaderProgram,//着色器程序
-		const glm::mat4& view,//视图
-		const glm::mat4& projection,//投影
-		const glm::vec3& cameraPos) {//相机坐标
+		const glm::mat4 view,//视图
+		const glm::mat4 projection,//投影
+		const glm::vec3 cameraPos,
+		const glm::mat4 parentModel = { 1 }) {//相机坐标
 	}
 
 	//模型摆放相关
-	glm::mat4 model = { 1.0 };
+protected: glm::mat4 model = { 1.0 };
+public:
 	virtual void ResetModel()
 	{
 		model = { 1.0 };
 	}
+	virtual glm::mat4 GetModel() { return model; }
 	virtual void SetModel(glm::mat4 m)
 	{
 		model = m;
@@ -51,6 +55,16 @@ public:
 		model = glm::rotate(model, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
 	}
 
+public:
+	virtual float IsPointToModel(
+		glm::vec2 pointPos2d,
+		glm::vec2 viewportSize,
+		glm::mat4 view,
+		glm::mat4 projection
+	)
+	{
+		return (std::numeric_limits<float>::max)();
+	}
 };
 
 class ObjModel :public Model
@@ -413,10 +427,13 @@ public:
 	}
 
 	void Draw(GLuint shaderProgram,
-		const glm::mat4& view,
-		const glm::mat4& projection,
-		const glm::vec3& cameraPos) override
+		const glm::mat4 view,
+		const glm::mat4 projection,
+		const glm::vec3 cameraPos,
+		const glm::mat4 parentModel = { 1.0 }) override
 	{
+		glm::mat4 finalModel = parentModel * model;
+
 		glUseProgram(shaderProgram);
 
 		//test
@@ -429,7 +446,7 @@ public:
 			glGetUniformLocation(shaderProgram, "uModel"),
 			1,
 			GL_FALSE,
-			glm::value_ptr(model)
+			glm::value_ptr(finalModel)
 		);
 
 		glUniformMatrix4fv(
@@ -504,120 +521,502 @@ public:
 
 		glBindVertexArray(0);
 	}
-};
 
-class GridModel :public Model
+	static bool RayTriangleIntersect(
+		const glm::vec3& rayOrigin,
+		const glm::vec3& rayDir,
+		const glm::vec3& v0,
+		const glm::vec3& v1,
+		const glm::vec3& v2,
+		float& t
+	)
+	{
+		const float EPS = 0.000001f;
+
+		glm::vec3 edge1 = v1 - v0;
+		glm::vec3 edge2 = v2 - v0;
+
+		glm::vec3 pvec = glm::cross(rayDir, edge2);
+		float det = glm::dot(edge1, pvec);
+
+		if (fabs(det) < EPS)
+			return false;
+
+		float invDet = 1.0f / det;
+
+		glm::vec3 tvec = rayOrigin - v0;
+		float u = glm::dot(tvec, pvec) * invDet;
+
+		if (u < 0.0f || u > 1.0f)
+			return false;
+
+		glm::vec3 qvec = glm::cross(tvec, edge1);
+		float v = glm::dot(rayDir, qvec) * invDet;
+
+		if (v < 0.0f || u + v > 1.0f)
+			return false;
+
+		t = glm::dot(edge2, qvec) * invDet;
+
+		return t >= 0.0f;
+	}
+
+	float IsPointToModel(
+		glm::vec2 pointPos2d,
+		glm::vec2 viewportSize,
+		glm::mat4 view,
+		glm::mat4 projection
+	) override
+	{
+		if (viewportSize.x <= 0.0f || viewportSize.y <= 0.0f)
+			return -1.0f;
+
+		float ndcX = (pointPos2d.x / viewportSize.x) * 2.0f - 1.0f;
+		float ndcY = 1.0f - (pointPos2d.y / viewportSize.y) * 2.0f;
+
+		glm::mat4 invViewProjection = glm::inverse(projection * view);
+
+		glm::vec4 nearClip(ndcX, ndcY, -1.0f, 1.0f);
+		glm::vec4 farClip(ndcX, ndcY, 1.0f, 1.0f);
+
+		glm::vec4 nearWorld4 = invViewProjection * nearClip;
+		glm::vec4 farWorld4 = invViewProjection * farClip;
+
+		if (nearWorld4.w == 0.0f || farWorld4.w == 0.0f)
+			return -1.0f;
+
+		glm::vec3 nearWorld = glm::vec3(nearWorld4) / nearWorld4.w;
+		glm::vec3 farWorld = glm::vec3(farWorld4) / farWorld4.w;
+
+		glm::vec3 rayOriginWorld = nearWorld;
+		glm::vec3 rayDirWorld = glm::normalize(farWorld - nearWorld);
+
+		// 关键：把世界空间射线变换到模型局部空间
+		glm::mat4 invModel = glm::inverse(model);
+
+		glm::vec3 rayOriginLocal =
+			glm::vec3(invModel * glm::vec4(rayOriginWorld, 1.0f));
+
+		glm::vec3 rayDirLocal =
+			glm::normalize(glm::vec3(invModel * glm::vec4(rayDirWorld, 0.0f)));
+
+		bool hit = false;
+		float nearestDepth = (std::numeric_limits<float>::max)();
+
+		for (size_t i = 0; i + 2 < vertices.size(); i += 3)
+		{
+			const glm::vec3& v0 = vertices[i + 0].pos;
+			const glm::vec3& v1 = vertices[i + 1].pos;
+			const glm::vec3& v2 = vertices[i + 2].pos;
+
+			float tLocal = 0.0f;
+			if (!RayTriangleIntersect(rayOriginLocal, rayDirLocal, v0, v1, v2, tLocal))
+				continue;
+
+			glm::vec3 hitLocal = rayOriginLocal + rayDirLocal * tLocal;
+
+			// 命中点转回世界空间
+			glm::vec3 hitWorld =
+				glm::vec3(model * glm::vec4(hitLocal, 1.0f));
+
+			// 再转 view space，返回相机深度
+			glm::vec3 hitView =
+				glm::vec3(view * glm::vec4(hitWorld, 1.0f));
+
+			float depth = -hitView.z;
+
+			if (depth >= 0.0f && depth < nearestDepth)
+			{
+				nearestDepth = depth;
+				hit = true;
+			}
+		}
+
+		return nearestDepth;
+	}
+
+
+};
+class GridModel : public Model
 {
 private:
+	struct GridVertex
+	{
+		glm::vec3 pos;
+		glm::vec3 normal;
+		glm::vec2 uv;
+	};
 
+private:
 	GLuint gridVAO = 0;
 	GLuint gridVBO = 0;
-	int gridLineCount = 0;
+
+	GLuint gridEBO = 0;
+	GLuint xAxisEBO = 0;
+	GLuint zAxisEBO = 0;
+
+	GLuint fadeTexture = 0;
+
+	int gridIndexCount = 0;
+	int xAxisIndexCount = 0;
+	int zAxisIndexCount = 0;
+
+	std::vector<GridVertex> gridVertices;
+
+	float fadeStart = 6.0f;
+	float fadeEnd = 18.0f;
+
+private:
+	static void SetMat4(GLuint program, const char* name, const glm::mat4& value)
+	{
+		GLint loc = glGetUniformLocation(program, name);
+		if (loc >= 0)
+			glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(value));
+	}
+
+	static void SetVec3(GLuint program, const char* name, const glm::vec3& value)
+	{
+		GLint loc = glGetUniformLocation(program, name);
+		if (loc >= 0)
+			glUniform3fv(loc, 1, glm::value_ptr(value));
+	}
+
+	static void SetFloat(GLuint program, const char* name, float value)
+	{
+		GLint loc = glGetUniformLocation(program, name);
+		if (loc >= 0)
+			glUniform1f(loc, value);
+	}
+
+	static void SetInt(GLuint program, const char* name, int value)
+	{
+		GLint loc = glGetUniformLocation(program, name);
+		if (loc >= 0)
+			glUniform1i(loc, value);
+	}
+
+	static float SmoothStep(float edge0, float edge1, float x)
+	{
+		float t = glm::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	}
+
+	void CreateFadeTexture(int size = 512)
+	{
+		std::vector<unsigned char> pixels(size * size * 4);
+
+		for (int y = 0; y < size; ++y)
+		{
+			for (int x = 0; x < size; ++x)
+			{
+				float u = ((float)x + 0.5f) / (float)size;
+				float v = ((float)y + 0.5f) / (float)size;
+
+				float dx = (u - 0.5f) * 2.0f * fadeEnd;
+				float dz = (v - 0.5f) * 2.0f * fadeEnd;
+
+				float dist = sqrtf(dx * dx + dz * dz);
+				float fade = 1.0f - SmoothStep(fadeStart, fadeEnd, dist);
+
+				unsigned char alpha = (unsigned char)glm::clamp(fade * 255.0f, 0.0f, 255.0f);
+
+				int index = (y * size + x) * 4;
+
+				pixels[index + 0] = 255;
+				pixels[index + 1] = 255;
+				pixels[index + 2] = 255;
+				pixels[index + 3] = alpha;
+			}
+		}
+
+		glGenTextures(1, &fadeTexture);
+		glBindTexture(GL_TEXTURE_2D, fadeTexture);
+
+		glTexImage2D(
+			GL_TEXTURE_2D,
+			0,
+			GL_RGBA8,
+			size,
+			size,
+			0,
+			GL_RGBA,
+			GL_UNSIGNED_BYTE,
+			pixels.data()
+		);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+		glBindTexture(GL_TEXTURE_2D, 0);
+	}
+
+	void UpdateFadeUV(const glm::vec3& cameraPos)
+	{
+		float invRange = 1.0f / (2.0f * fadeEnd);
+
+		for (GridVertex& v : gridVertices)
+		{
+			glm::vec3 worldPos = glm::vec3(model * glm::vec4(v.pos, 1.0f));
+
+			v.uv.x = 0.5f + (worldPos.x - cameraPos.x) * invRange;
+			v.uv.y = 0.5f + (worldPos.z - cameraPos.z) * invRange;
+		}
+
+		glBindBuffer(GL_ARRAY_BUFFER, gridVBO);
+		glBufferSubData(
+			GL_ARRAY_BUFFER,
+			0,
+			gridVertices.size() * sizeof(GridVertex),
+			gridVertices.data()
+		);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
+
+	void UploadIndexBuffer(GLuint& ebo, const std::vector<unsigned int>& indices)
+	{
+		glGenBuffers(1, &ebo);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+
+		glBufferData(
+			GL_ELEMENT_ARRAY_BUFFER,
+			indices.size() * sizeof(unsigned int),
+			indices.empty() ? nullptr : indices.data(),
+			GL_STATIC_DRAW
+		);
+	}
+
+	void DrawIndexBatch(GLuint shaderProgram, GLuint ebo, int indexCount, const glm::vec3& color)
+	{
+		if (indexCount <= 0)
+			return;
+
+		SetVec3(shaderProgram, "uKd", color);
+		SetFloat(shaderProgram, "uD", 1.0f);
+
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+		glDrawElements(GL_LINES, indexCount, GL_UNSIGNED_INT, 0);
+	}
 
 public:
 	void InitGrid(float halfSize = 10.0f, int lines = 200)
 	{
-		std::vector<glm::vec3> vertices;
-		std::vector<unsigned int> indices;
+		gridVertices.clear();
 
-		float step = (halfSize * 2.0f) / lines;
+		std::vector<unsigned int> gridIndices;
+		std::vector<unsigned int> xAxisIndices;
+		std::vector<unsigned int> zAxisIndices;
 
-		// 1. 生成“交叉点顶点”
-		for (int z = 0; z <= lines; z++)
+		float step = (halfSize * 2.0f) / (float)lines;
+
+		int axisIndex = (int)roundf(halfSize / step);
+		bool hasExactAxis = fabsf((-halfSize + axisIndex * step)) < 0.00001f;
+
+		for (int z = 0; z <= lines; ++z)
 		{
-			for (int x = 0; x <= lines; x++)
+			for (int x = 0; x <= lines; ++x)
 			{
 				float px = -halfSize + x * step;
 				float pz = -halfSize + z * step;
 
-				vertices.push_back(glm::vec3(px, 0.0f, pz));
+				GridVertex vertex;
+				vertex.pos = glm::vec3(px, 0.0f, pz);
+				vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+				vertex.uv = glm::vec2(0.0f, 0.0f);
+
+				gridVertices.push_back(vertex);
 			}
 		}
 
-		// 2. 生成横向线索引
-		for (int z = 0; z <= lines; z++)
+		// 横向线：沿 X 方向，z == 0 的这一排就是 X 轴
+		for (int z = 0; z <= lines; ++z)
 		{
-			for (int x = 0; x < lines; x++)
+			for (int x = 0; x < lines; ++x)
 			{
-				int i0 = z * (lines + 1) + x;
-				int i1 = i0 + 1;
+				unsigned int i0 = z * (lines + 1) + x;
+				unsigned int i1 = i0 + 1;
 
-				indices.push_back(i0);
-				indices.push_back(i1);
+				if (hasExactAxis && z == axisIndex)
+				{
+					xAxisIndices.push_back(i0);
+					xAxisIndices.push_back(i1);
+				}
+				else
+				{
+					gridIndices.push_back(i0);
+					gridIndices.push_back(i1);
+				}
 			}
 		}
 
-		// 3. 生成纵向线索引
-		for (int z = 0; z < lines; z++)
+		// 纵向线：沿 Z 方向，x == 0 的这一列就是 Z 轴
+		for (int z = 0; z < lines; ++z)
 		{
-			for (int x = 0; x <= lines; x++)
+			for (int x = 0; x <= lines; ++x)
 			{
-				int i0 = z * (lines + 1) + x;
-				int i1 = i0 + (lines + 1);
+				unsigned int i0 = z * (lines + 1) + x;
+				unsigned int i1 = i0 + (lines + 1);
 
-				indices.push_back(i0);
-				indices.push_back(i1);
+				if (hasExactAxis && x == axisIndex)
+				{
+					zAxisIndices.push_back(i0);
+					zAxisIndices.push_back(i1);
+				}
+				else
+				{
+					gridIndices.push_back(i0);
+					gridIndices.push_back(i1);
+				}
 			}
 		}
 
-		gridLineCount = (int)indices.size();
-
-		GLuint EBO;
+		gridIndexCount = (int)gridIndices.size();
+		xAxisIndexCount = (int)xAxisIndices.size();
+		zAxisIndexCount = (int)zAxisIndices.size();
 
 		glGenVertexArrays(1, &gridVAO);
 		glGenBuffers(1, &gridVBO);
-		glGenBuffers(1, &EBO);
 
 		glBindVertexArray(gridVAO);
 
-		// vertex buffer
 		glBindBuffer(GL_ARRAY_BUFFER, gridVBO);
-		glBufferData(GL_ARRAY_BUFFER,
-			vertices.size() * sizeof(glm::vec3),
-			vertices.data(),
-			GL_STATIC_DRAW);
+		glBufferData(
+			GL_ARRAY_BUFFER,
+			gridVertices.size() * sizeof(GridVertex),
+			gridVertices.data(),
+			GL_DYNAMIC_DRAW
+		);
 
-		// index buffer
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-			indices.size() * sizeof(unsigned int),
-			indices.data(),
-			GL_STATIC_DRAW);
-
+		// layout(location = 0) in vec3 aPos;
 		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+		glVertexAttribPointer(
+			0,
+			3,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(GridVertex),
+			(void*)offsetof(GridVertex, pos)
+		);
+
+		// layout(location = 1) in vec3 aNormal;
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(
+			1,
+			3,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(GridVertex),
+			(void*)offsetof(GridVertex, normal)
+		);
+
+		// layout(location = 2) in vec2 aUV;
+		glEnableVertexAttribArray(2);
+		glVertexAttribPointer(
+			2,
+			2,
+			GL_FLOAT,
+			GL_FALSE,
+			sizeof(GridVertex),
+			(void*)offsetof(GridVertex, uv)
+		);
+
+		UploadIndexBuffer(gridEBO, gridIndices);
+		UploadIndexBuffer(xAxisEBO, xAxisIndices);
+		UploadIndexBuffer(zAxisEBO, zAxisIndices);
 
 		glBindVertexArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+		CreateFadeTexture(512);
 	}
-	void Draw(GLuint shaderProgram,
-		const glm::mat4& view,
-		const glm::mat4& projection,
-		const glm::vec3& cameraPos) override
+
+	void Draw(
+		GLuint shaderProgram,
+		const glm::mat4 view,
+		const glm::mat4 projection,
+		const glm::vec3 cameraPos,
+		const glm::mat4 parentModel = { 1.0 }
+	) override
 	{
+		glm::mat4 finalModel = parentModel * model;
+		UpdateFadeUV(cameraPos);
 
 		glUseProgram(shaderProgram);
 
-		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"),
-			1, GL_FALSE, glm::value_ptr(model));
+		SetMat4(shaderProgram, "uModel", finalModel);
+		SetMat4(shaderProgram, "uView", view);
+		SetMat4(shaderProgram, "uProjection", projection);
 
-		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"),
-			1, GL_FALSE, glm::value_ptr(view));
+		glm::mat3 normalMatrix = glm::mat3(glm::transpose(glm::inverse(finalModel)));
+		GLint normalLoc = glGetUniformLocation(shaderProgram, "uNormalMatrix");
+		if (normalLoc >= 0)
+			glUniformMatrix3fv(normalLoc, 1, GL_FALSE, glm::value_ptr(normalMatrix));
 
-		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"),
-			1, GL_FALSE, glm::value_ptr(projection));
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, fadeTexture);
 
-		glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"),
-			1, glm::value_ptr(cameraPos));
+		SetInt(shaderProgram, "uDiffuseMap", 0);
+		SetInt(shaderProgram, "uHasDiffuseTexture", 1);
+
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 		glBindVertexArray(gridVAO);
-		glDrawElements(GL_LINES, gridLineCount, GL_UNSIGNED_INT, 0);
+
+		// 普通网格
+		DrawIndexBatch(
+			shaderProgram,
+			gridEBO,
+			gridIndexCount,
+			glm::vec3(0.32f, 0.32f, 0.32f)
+		);
+
+		// X 轴，红色
+		DrawIndexBatch(
+			shaderProgram,
+			xAxisEBO,
+			xAxisIndexCount,
+			glm::vec3(0.85f, 0.20f, 0.20f)
+		);
+
+		// Z 轴，蓝色
+		DrawIndexBatch(
+			shaderProgram,
+			zAxisEBO,
+			zAxisIndexCount,
+			glm::vec3(0.20f, 0.45f, 0.95f)
+		);
+
 		glBindVertexArray(0);
+		glBindTexture(GL_TEXTURE_2D, 0);
 	}
 
-	//gl初始化之后执行
 	void Init() override
 	{
-		InitGrid(10, 200);
+		InitGrid(10.0f, 200);
 	}
 
+	~GridModel()
+	{
+		if (gridVBO != 0)
+			glDeleteBuffers(1, &gridVBO);
+
+		if (gridEBO != 0)
+			glDeleteBuffers(1, &gridEBO);
+
+		if (xAxisEBO != 0)
+			glDeleteBuffers(1, &xAxisEBO);
+
+		if (zAxisEBO != 0)
+			glDeleteBuffers(1, &zAxisEBO);
+
+		if (gridVAO != 0)
+			glDeleteVertexArrays(1, &gridVAO);
+
+		if (fadeTexture != 0)
+			glDeleteTextures(1, &fadeTexture);
+	}
 };

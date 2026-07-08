@@ -12,61 +12,12 @@
 
 #include "E3dModel.h"
 #include "E3dShader.h"
+#include "E3dScene.h"
+
 
 class TestObjModel :public Enola2::Component
 {
 private://shader
-	const char* gridVertexSL = R"(
-#version 330 core
-
-layout (location = 0) in vec3 aPos;
-
-uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
-
-out vec3 WorldPos;
-
-void main()
-{
-    vec4 world = model * vec4(aPos, 1.0);
-    WorldPos = world.xyz;
-
-    gl_Position = projection * view * world;
-}
-)";
-	const char* gridFragmentSL = R"(
-#version 330 core
-
-in vec3 WorldPos;
-
-uniform vec3 cameraPos;
-
-out vec4 FragColor;
-
-void main()
-{
-    vec3 gridColor = vec3(0.32, 0.32, 0.32);
-    vec3 xAxisColor = vec3(0.85, 0.20, 0.20);
-    vec3 zAxisColor = vec3(0.20, 0.45, 0.95);
-
-    float axisWidth = 0.001;
-
-    vec3 color = gridColor;
-
-    if (abs(WorldPos.z) < axisWidth)
-        color = xAxisColor;
-
-    if (abs(WorldPos.x) < axisWidth)
-        color = zAxisColor;
-
-    float dist = distance(cameraPos.xz, WorldPos.xz);
-    float fade = 1.0 - smoothstep(6.0, 18.0, dist);
-
-    FragColor = vec4(color, fade);
-}
-)";
-
 	const char* vertexSL = R"(
 #version 330 core
 
@@ -130,8 +81,7 @@ void main()
 private:
 	ViewController viewCtrl;
 	ShaderCompiler shader;
-	GLuint gridProgram = 0;
-	GLuint modelProgram = 0;
+	GLuint shaderProgram = 0;
 	GridModel grid;
 	ObjModel objloader;
 	glm::mat4 model{ 1 };
@@ -157,8 +107,7 @@ public:
 		objloader.LoadObj(rspath + "zeraora/zeraora.obj", rspath + "zeraora/zeraora.mtl");
 		objloader.CreateVAOVBO();
 
-		gridProgram = shader.CompileShaderGLSL(gridVertexSL, gridFragmentSL);
-		modelProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
+		shaderProgram = shader.CompileShaderGLSL(vertexSL, fragmentSL);
 		viewCtrl.SetCamera(
 			glm::vec3(-2.0f, 0.0f, 0.0f),//相机位置
 			glm::vec3(0.0f, 0.0f, 0.0f),//朝向世界坐标
@@ -180,8 +129,8 @@ public:
 		t += 0.001;
 		t -= (int)t;
 
-		grid.Draw(gridProgram, view, projection, cameraPos);
-		objloader.Draw(modelProgram, view, projection, cameraPos);
+		grid.Draw(shaderProgram, view, projection, cameraPos);
+		objloader.Draw(shaderProgram, view, projection, cameraPos);
 	}
 	void Resize() override
 	{
