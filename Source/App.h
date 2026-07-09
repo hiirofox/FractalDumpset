@@ -154,7 +154,7 @@ private:
 	std::string rspath = "";
 #endif 
 
-	TestObjModel v3d;
+	SceneEditor v3d;
 public:
 	MyRootComponent()
 	{

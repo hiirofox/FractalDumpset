@@ -322,5 +322,9 @@ namespace Enola2
 		{
 			return { directX,directY,bounds.w,bounds.h };
 		}
+		std::pair<float, float> GlobalPosToComponent(float x, float y)
+		{
+			return { x - directX,y - directY };
+		}
 	};
 }

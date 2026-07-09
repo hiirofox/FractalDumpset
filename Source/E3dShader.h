@@ -9,7 +9,7 @@ class ShaderCompiler
 {
 private:
 public:
-	GLuint CompileShaderGLSL(const char* vertex, const char* fragment)
+	static GLuint CompileShaderGLSL(const char* vertex, const char* fragment)
 	{
 		GLint success = 0;
 		GLchar infoLog[1024];
