@@ -7,67 +7,102 @@
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"
 
+#include "E3dDef.h"
 #include "E3dUtils.h"
 
-class Model
+class ModelComponent
 {
+private:
+	std::vector<ModelComponent*> children;
+	GLuint shader = 0;
+	glm::mat4 model = { 1.0 };
+	std::string name = "model";
+private:
+	void DoDraw(CameraContext& cctx)
+	{
+		Draw(cctx);
+		for (auto* c : children)c->DoDraw(cctx);
+	}
+	void DoUpdateShader(GLuint shader)
+	{
+		this->shader = shader;
+		for (auto* c : children)c->UpdateShader(shader);
+	}
+	void DoUpdateTransform(glm::mat4 model)
+	{
+		this->model = model;
+		for (auto* c : children)c->UpdateTransform(model);
+	}
+	void DoUpdateTick(double t)
+	{
+		Tick(t);
+		for (auto* c : children)c->DoUpdateTick(t);
+	}
 public:
+	void AddChildModel(ModelComponent& child)
+	{
+		if (&child != this)children.push_back(&child);
+	}
+
 	//gl初始化之后执行
 	virtual void Init() {}
 
 	//绘制模型
-	virtual void Draw(GLuint shaderProgram,//着色器程序
-		const glm::mat4 view,//视图
-		const glm::mat4 projection,//投影
-		const glm::vec3 cameraPos,
-		const glm::mat4 parentModel = { 1 }) {//相机坐标
-	}
+	virtual void Draw(CameraContext& cctx) {}
+	//重绘，一般是根组件调用
+	void ReDraw(CameraContext& cctx) { DoDraw(cctx); }
 
-	//模型摆放相关
-protected: glm::mat4 model = { 1.0 };
-public:
-	virtual void ResetModel()
-	{
-		model = { 1.0 };
-	}
-	virtual glm::mat4 GetModel() { return model; }
-	virtual void SetModel(glm::mat4 m)
-	{
-		model = m;
-	}
-	virtual void SetModelPos(glm::vec3 p)
-	{
-		model[3] = glm::vec4(p, 1.0f);
-	}
-	virtual void TranslateModel(glm::vec3 t)
-	{
-		model = glm::translate(model, t);
-	}
-	virtual void ScaleModel(float k)
-	{
-		model = glm::scale(model, glm::vec3(k));
-	}
-	virtual void RotateModel(glm::vec3 r)
-	{
-		r = glm::radians(r);
-		model = glm::rotate(model, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
-		model = glm::rotate(model, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
-		model = glm::rotate(model, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
-	}
+	//父组件更新shader，里面可以对子组件SetShader
+	virtual void UpdateShader(GLuint shader) {}
+	//设置shader，会触发子组件UpdateShader
+	void SetShader(GLuint shader) { DoUpdateShader(shader); }
+	GLuint GetShader() { return shader; }
 
-public:
-	virtual float IsPointToModel(
-		glm::vec2 pointPos2d,
-		glm::vec2 viewportSize,
-		glm::mat4 view,
-		glm::mat4 projection
+	//父组件更新model时调用，里面可以对子组件SetTransform
+	virtual void UpdateTransform(glm::mat4 parentModel) {}
+	//设置model矩阵，会触发子组件UpdateTransform
+	void SetTransform(glm::mat4 model) { DoUpdateTransform(model); }
+	glm::mat4 GetModelMatrix() { return model; }
+
+	//根据系统tick更新触发
+	virtual void Tick(double t) {}
+	//手动触发tick，一般是根组件调用
+	void TrigTick(double t) { DoUpdateTick(t); }
+
+public: //实用接口，非必须实现
+
+	//模型内部自己写射线检测算法。返回深度
+	virtual std::pair<float, ModelComponent*> RayCheckMethod(
+		glm::vec2 pointPos2d,  //绘制坐标
+		glm::vec2 viewportSize,//绘制区域大小
+		CameraContext& cctx
 	)
 	{
-		return (std::numeric_limits<float>::max)();
+		return { (std::numeric_limits<float>::max)() ,NULL };
 	}
+	std::pair<float, ModelComponent*> RayCheck(
+		glm::vec2 pointPos2d,
+		glm::vec2 viewportSize,
+		CameraContext& cctx
+	)
+	{
+		float minz = (std::numeric_limits<float>::max)();
+		std::pair<float, ModelComponent*> rayTo = { minz,NULL };
+		auto check = RayCheckMethod(pointPos2d, viewportSize, cctx);
+		if (check.first < rayTo.first)rayTo = check;
+		for (auto* child : children)
+		{
+			auto check = child->RayCheck(pointPos2d, viewportSize, cctx);
+			if (check.first < rayTo.first)rayTo = check;
+		}
+		return rayTo;
+	}
+
+	void SetName(std::string name) { this->name = name; }
+	std::string GetName() { return name; }
 };
 
-class ObjModel :public Model
+class ObjModel :public ModelComponent
 {
 private:
 	struct MtlGroup
@@ -424,15 +459,16 @@ public:
 	void Init() override
 	{
 		CreateVAOVBO();
+		SetName("ObjModel");
 	}
 
-	void Draw(GLuint shaderProgram,
-		const glm::mat4 view,
-		const glm::mat4 projection,
-		const glm::vec3 cameraPos,
-		const glm::mat4 parentModel = { 1.0 }) override
+	void Draw(CameraContext& cctx) override
 	{
-		glm::mat4 finalModel = parentModel * model;
+		glm::mat4 finalModel = GetModelMatrix();
+		GLuint shaderProgram = GetShader();
+		auto view = cctx.view;
+		auto projection = cctx.projection;
+		auto cameraPos = cctx.GetCameraPos();
 
 		glUseProgram(shaderProgram);
 
@@ -561,15 +597,23 @@ public:
 		return t >= 0.0f;
 	}
 
-	float IsPointToModel(
-		glm::vec2 pointPos2d,
-		glm::vec2 viewportSize,
-		glm::mat4 view,
-		glm::mat4 projection
+	std::pair<float, ModelComponent*> RayCheckMethod(
+		glm::vec2 pointPos2d,  //绘制坐标
+		glm::vec2 viewportSize,//绘制区域大小
+		CameraContext& cctx
 	) override
 	{
+		glm::mat4 finalModel = GetModelMatrix();
+		GLuint shaderProgram = GetShader();
+		auto view = cctx.view;
+		auto projection = cctx.projection;
+		auto cameraPos = cctx.GetCameraPos();
+
+
 		if (viewportSize.x <= 0.0f || viewportSize.y <= 0.0f)
-			return -1.0f;
+			return { (std::numeric_limits<float>::max)() ,NULL };
+
+		glm::mat4 model = GetModelMatrix();
 
 		float ndcX = (pointPos2d.x / viewportSize.x) * 2.0f - 1.0f;
 		float ndcY = 1.0f - (pointPos2d.y / viewportSize.y) * 2.0f;
@@ -583,7 +627,7 @@ public:
 		glm::vec4 farWorld4 = invViewProjection * farClip;
 
 		if (nearWorld4.w == 0.0f || farWorld4.w == 0.0f)
-			return -1.0f;
+			return { (std::numeric_limits<float>::max)() ,NULL };
 
 		glm::vec3 nearWorld = glm::vec3(nearWorld4) / nearWorld4.w;
 		glm::vec3 farWorld = glm::vec3(farWorld4) / farWorld4.w;
@@ -632,12 +676,19 @@ public:
 			}
 		}
 
-		return nearestDepth;
+		return { nearestDepth, this };
 	}
 
-
+	void UpdateShader(GLuint shader) override
+	{
+		SetShader(shader);
+	}
+	void UpdateTransform(glm::mat4 parentModel)
+	{
+		SetTransform(parentModel * glm::mat4{ 1.0 });
+	}
 };
-class GridModel : public Model
+class GridModel : public ModelComponent
 {
 private:
 	struct GridVertex
@@ -756,6 +807,7 @@ private:
 	void UpdateFadeUV(const glm::vec3& cameraPos)
 	{
 		float invRange = 1.0f / (2.0f * fadeEnd);
+		glm::mat4 model = GetModelMatrix();
 
 		for (GridVertex& v : gridVertices)
 		{
@@ -803,6 +855,8 @@ private:
 public:
 	void InitGrid(float halfSize = 10.0f, int lines = 200)
 	{
+		SetName("Grid");
+
 		gridVertices.clear();
 
 		std::vector<unsigned int> gridIndices;
@@ -933,15 +987,14 @@ public:
 		CreateFadeTexture(512);
 	}
 
-	void Draw(
-		GLuint shaderProgram,
-		const glm::mat4 view,
-		const glm::mat4 projection,
-		const glm::vec3 cameraPos,
-		const glm::mat4 parentModel = { 1.0 }
-	) override
+	void Draw(CameraContext& cctx) override
 	{
-		glm::mat4 finalModel = parentModel * model;
+		glm::mat4 finalModel = GetModelMatrix();
+		GLuint shaderProgram = GetShader();
+		auto view = cctx.view;
+		auto projection = cctx.projection;
+		auto cameraPos = cctx.GetCameraPos();
+
 		UpdateFadeUV(cameraPos);
 
 		glUseProgram(shaderProgram);
@@ -997,6 +1050,15 @@ public:
 	void Init() override
 	{
 		InitGrid(10.0f, 200);
+	}
+
+	void UpdateShader(GLuint shader) override
+	{
+		SetShader(shader);
+	}
+	void UpdateTransform(glm::mat4 parentModel)
+	{
+		SetTransform(parentModel * glm::mat4{ 1.0 });
 	}
 
 	~GridModel()

@@ -5,98 +5,25 @@
 #include "External/glm/glm/gtc/type_ptr.hpp"
 #include "External/glm/glm/gtc/matrix_transform.hpp"
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include "External/glm/glm/gtx/euler_angles.hpp"
+
 #include "E3dUtils.h"
 #include "E3dModel.h"
 #include "Enola2Event.h"
 #include "Enola2Component.h"
-
-class Scene :public Model
-{
-private:
-	struct TagModel
-	{
-		std::unique_ptr<Model> model;
-		std::string indexName;
-	};
-	Model nullModel;
-	TagModel nullTagModel{ std::unique_ptr<Model>(&nullModel),"null" };
-	std::vector<TagModel> models;
-public:
-	void AddModel(Model& model, std::string indexName)
-	{
-		models.push_back({ std::unique_ptr<Model>(&model), indexName });
-	}
-	Model& GetModelRef(std::string indexName)
-	{
-		if (indexName == "RootScene")return *this;
-		for (auto& m : models)if (m.indexName == indexName) return *m.model;
-		return nullModel;
-	}
-
-	void Draw(GLuint shaderProgram,//着色器程序
-		const glm::mat4 view,//视图
-		const glm::mat4 projection,//投影
-		const glm::vec3 cameraPos,
-		const glm::mat4 parentModel = { 1 }) override//相机坐标
-	{
-		glm::mat4 finalModel = parentModel * model;
-		for (auto& m : models)
-		{
-			m.model->Draw(shaderProgram, view, projection, cameraPos, finalModel);
-		}
-	}
-
-	float IsPointToModel(
-		glm::vec2 pointPos2d,
-		glm::vec2 viewportSize,
-		glm::mat4 view,
-		glm::mat4 projection
-	) override
-	{
-		float nearestDepth = (std::numeric_limits<float>::max)();
-		for (auto& m : models)
-		{
-			float dp = m.model->IsPointToModel(pointPos2d, viewportSize, view, projection);
-			if (dp < nearestDepth)
-			{
-				nearestDepth = dp;
-			}
-		}
-		return nearestDepth;
-	}
-
-	TagModel& GetPointToModelRef(
-		glm::vec2 pointPos2d,
-		glm::vec2 viewportSize,
-		glm::mat4 view,
-		glm::mat4 projection
-	)
-	{
-		TagModel* md = &nullTagModel;
-		float nearestDepth = (std::numeric_limits<float>::max)();
-		for (auto& m : models)
-		{
-			float dp = m.model->IsPointToModel(pointPos2d, viewportSize, view, projection);
-			if (dp < nearestDepth)
-			{
-				nearestDepth = dp;
-				md = &m;
-			}
-		}
-		return *md;
-	}
-};
+#include "Enola2Timer.h"
 
 //变换器，类似blender的
 //需要：组件系统坐标（解耦鼠标指针位置），fbo进行绘制，模型变换矩阵等。
 //如果不进行细致的抽象，这个类有可能承载比较重的语义。
-class TransformGizmo : public Scene
+class TransformGizmo : public ModelComponent
 {
 private:
 public:
 };
 
-class SceneTest1 :public Scene
+class Zeraora :public ModelComponent
 {
 private:
 	std::string rspath = "D:/Projects/c++/FractalDumpset/Resources/";
@@ -106,11 +33,25 @@ public:
 	{
 		zeraora.LoadObj(rspath + "zeraora/zeraora.obj", rspath + "zeraora/zeraora.mtl");
 		zeraora.CreateVAOVBO();
-		AddModel(zeraora, "zeraora1");
+		SetName("zeraora");
+		AddChildModel(zeraora);
+	}
+	double TimeToCycle(double t, double k)
+	{
+		t *= k;
+		return t - floor(t);
+	}
+	void Tick(double ts) override
+	{
+		float cycle = TimeToCycle(ts, 0.05);
+		zeraora.SetTransform(glm::eulerAngleXYZ(
+			glm::radians(0.0),
+			glm::radians(cycle * 360.0),
+			glm::radians(0.0)));
 	}
 };
 
-class SceneEditor :public Enola2::Component, public Enola2::EventListener
+class SceneEditor :public Enola2::Component, public Enola2::EventListener, public Enola2::Timer
 {
 private:
 	const char* vertexSL = R"(
@@ -176,8 +117,9 @@ void main()
 private:
 	ViewController viewCtrl;
 
+	Zeraora scene;//场景
+
 	GridModel grid;//网格
-	SceneTest1 scene;//场景
 	TransformGizmo gizmo;//操纵器
 	int enableGizmo = 0;
 
@@ -201,8 +143,11 @@ public://鼠标键盘操作相关
 			glm::vec2 point = { px, py };
 			glm::vec2 viewportSize = { GetBounds().w,GetBounds().h };
 			glm::mat4 view = viewCtrl.GetNowView();
-			auto& pointRef = scene.GetPointToModelRef(point, viewportSize, view, projection);
-			printf("Double click: [ModelName] %s\n", pointRef.indexName.c_str());
+			CameraContext cctx = { view, projection };
+			auto [depth, model] = scene.RayCheck(point, viewportSize, cctx);
+			std::string modelName = "null";
+			if (model) modelName = model->GetName();
+			printf("Double click: [ModelName] %s\n", modelName.c_str());
 		}
 	}
 	void OnKey(const Enola2::KeyEvent& e)override
@@ -225,20 +170,32 @@ public://组件相关
 		grid.Init();
 
 		shaderProgram = ShaderCompiler::CompileShaderGLSL(vertexSL, fragmentSL);
+
+		scene.SetShader(shaderProgram);
+		grid.SetShader(shaderProgram);
+		gizmo.SetShader(shaderProgram);
+
+		Enola2::GetProgramElapsedSeconds();
 	}
 	void Render(GLuint fbo) override
 	{
 		glm::mat4 view = viewCtrl.GetNowView();
 		glm::vec3 cameraPos = viewCtrl.GetNowCameraPos();
 
+		double ts = Enola2::GetProgramElapsedSeconds();
+		grid.TrigTick(ts);
+		scene.TrigTick(ts);
+		gizmo.TrigTick(ts);
+
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo);//在render提供的fbo上画
 		glEnable(GL_DEPTH_TEST);
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		grid.Draw(shaderProgram, view, projection, cameraPos, { 1.0 });
-		scene.Draw(shaderProgram, view, projection, cameraPos, { 1.0 });
-		if (enableGizmo)gizmo.Draw(shaderProgram, view, projection, cameraPos, { 1.0 });
+		CameraContext cctx = { view, projection };
+		grid.ReDraw(cctx);//根组件调用绘制用ReDraw
+		scene.ReDraw(cctx);
+		if (enableGizmo)gizmo.ReDraw(cctx);
 	}
 	void Resize() override
 	{
