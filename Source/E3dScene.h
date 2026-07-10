@@ -13,6 +13,7 @@
 #include "Enola2Event.h"
 #include "Enola2Component.h"
 #include "Enola2Timer.h"
+#include "Enola2Printf.h"
 
 //变换器，类似blender的
 //需要：组件系统坐标（解耦鼠标指针位置），fbo进行绘制，模型变换矩阵等。
@@ -23,11 +24,15 @@ private:
 public:
 };
 
-class Zeraora :public ModelComponent
+class SpinningZeraora :public ModelComponent
 {
 private:
 	std::string rspath = "D:/Projects/c++/FractalDumpset/Resources/";
 	ObjModel zeraora;
+
+	//自己管理父组件model和自己的model
+	glm::mat4 parentModel = { 1.0 };
+	glm::mat4 myModel = { 1.0 };
 public:
 	void Init() override
 	{
@@ -44,10 +49,93 @@ public:
 	void Tick(double ts) override
 	{
 		float cycle = TimeToCycle(ts, 0.05);
-		zeraora.SetTransform(glm::eulerAngleXYZ(
+		myModel = glm::eulerAngleXYZ(
 			glm::radians(0.0),
 			glm::radians(cycle * 360.0),
-			glm::radians(0.0)));
+			glm::radians(0.0));//给自己应用上旋转
+		zeraora.SetTransform(parentModel * myModel);//子控件应用上旋转
+		//zeraora.SetTransform(parentModel);//子控件跟随父控件，绕过自己
+	}
+	void UpdateShader(GLuint shader) override
+	{
+		zeraora.SetShader(shader);
+	}
+	void UpdateTransform(glm::mat4 parentModel)
+	{
+		this->parentModel = parentModel;//更新父控件变换
+		zeraora.SetTransform(parentModel * myModel);
+	}
+};
+class CubeModel :public ModelComponent
+{
+private:
+	std::string rspath = "D:/Projects/c++/FractalDumpset/Resources/";
+	ObjModel cube;
+	glm::mat4 parentModel = { 1.0 };
+	glm::mat4 myModel = { 1.0 };
+public:
+	void Init() override
+	{
+		cube.LoadObj(rspath + "cube.obj", rspath + "cube.mtl");
+		cube.CreateVAOVBO();
+		SetName("cube");
+		AddChildModel(cube);
+	}
+	double TimeToCycle(double t, double k)
+	{
+		t *= k;
+		return t - floor(t);
+	}
+	void UpdateShader(GLuint shader) override
+	{
+		cube.SetShader(shader);
+	}
+
+	void Tick(double ts) override
+	{
+		myModel = glm::translate(glm::mat4{ 1.0 }, glm::vec3{ 4.0,0.0,0.0 });
+
+		float cycle = TimeToCycle(ts, 0.5);
+		glm::mat4 scaleMatrix = glm::scale(glm::mat4{ 1.0 },
+			glm::vec3{ 1.0,sin(cycle * 2.0 * 3.1415926535) * 0.5 + 1.5,1.0 } *0.5f);
+
+		myModel = scaleMatrix * myModel;
+
+		cube.SetTransform(parentModel * myModel);
+	}
+	void UpdateTransform(glm::mat4 parentModel)
+	{
+		this->parentModel = parentModel;
+		cube.SetTransform(parentModel * myModel);
+	}
+};
+
+class Scene1 :public ModelComponent
+{
+private:
+	SpinningZeraora zeraora;
+	CubeModel cube;
+
+	glm::mat4 parentModel = { 1.0 };
+	glm::mat4 myModel = { 1.0 };
+public:
+	void Init() override
+	{
+		zeraora.Init();
+		cube.Init();
+		AddChildModel(zeraora);
+		AddChildModel(cube);
+	}
+	void UpdateShader(GLuint shader) override
+	{
+		zeraora.SetShader(shader);
+		cube.SetShader(shader);
+	}
+	void UpdateTransform(glm::mat4 parentModel)
+	{
+		this->parentModel = parentModel;
+		zeraora.SetTransform(parentModel * myModel);
+		cube.SetTransform(parentModel * myModel);
 	}
 };
 
@@ -117,7 +205,7 @@ void main()
 private:
 	ViewController viewCtrl;
 
-	Zeraora scene;//场景
+	Scene1 scene;//场景
 
 	GridModel grid;//网格
 	TransformGizmo gizmo;//操纵器
@@ -171,18 +259,26 @@ public://组件相关
 
 		shaderProgram = ShaderCompiler::CompileShaderGLSL(vertexSL, fragmentSL);
 
+		scene.SetTransform({ 1.0 });
+		scene.SetName("Scene");
+
 		scene.SetShader(shaderProgram);
 		grid.SetShader(shaderProgram);
 		gizmo.SetShader(shaderProgram);
 
 		Enola2::GetProgramElapsedSeconds();
 	}
+	double lastts = 0.0;
+	double smoothDts = 0.0;
 	void Render(GLuint fbo) override
 	{
 		glm::mat4 view = viewCtrl.GetNowView();
 		glm::vec3 cameraPos = viewCtrl.GetNowCameraPos();
 
 		double ts = Enola2::GetProgramElapsedSeconds();
+		smoothDts += 0.1 * (ts - lastts - smoothDts);
+		lastts = ts;
+
 		grid.TrigTick(ts);
 		scene.TrigTick(ts);
 		gizmo.TrigTick(ts);
@@ -196,6 +292,9 @@ public://组件相关
 		grid.ReDraw(cctx);//根组件调用绘制用ReDraw
 		scene.ReDraw(cctx);
 		if (enableGizmo)gizmo.ReDraw(cctx);
+
+		float fps = 1.0 / smoothDts;
+		Enola2::xyprintf(fbo, "FIXEDSYS", 8, 16, 0, 0, "FPS:%.5f", fps);
 	}
 	void Resize() override
 	{
